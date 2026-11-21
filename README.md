@@ -1,4 +1,30 @@
+# ParkSense
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Screen gallery
+
+Select a screenshot to view it at full size.
+
+| 01 · Welcome | 02 · Log in | 03 · Home |
+| :---: | :---: | :---: |
+| [![Welcome](design_refs/01-welcome.png)](design_refs/01-welcome.png) | [![Log in](design_refs/02-login.png)](design_refs/02-login.png) | [![Home](design_refs/03-home.png)](design_refs/03-home.png) |
+
+| 04 · Save parking | 05 · Find my vehicle | 06 · History |
+| :---: | :---: | :---: |
+| [![Save parking](design_refs/04-save-parking.png)](design_refs/04-save-parking.png) | [![Find my vehicle](design_refs/05-find-my-vehicle.png)](design_refs/05-find-my-vehicle.png) | [![History](design_refs/06-history.png)](design_refs/06-history.png) |
+
+| 07 · Profile | 08 · Edit parking details | 09 · Take vehicle photo |
+| :---: | :---: | :---: |
+| [![Profile](design_refs/07-profile.png)](design_refs/07-profile.png) | [![Edit parking details](design_refs/08-edit-parking-details.png)](design_refs/08-edit-parking-details.png) | [![Take vehicle photo](design_refs/09-take-vehicle-photo.png)](design_refs/09-take-vehicle-photo.png) |
+
+| 10 · Delete record | 11 · Navigate | 12 · Arrived at location |
+| :---: | :---: | :---: |
+| [![Delete record](design_refs/10-delete-record.png)](design_refs/10-delete-record.png) | [![Navigate](design_refs/11-navigate.png)](design_refs/11-navigate.png) | [![Arrived at location](design_refs/12-arrived-at-location.png)](design_refs/12-arrived-at-location.png) |
+
+| 13 · Vehicle details | 14 · Photo preview | 15 · Edit all parking information |
+| :---: | :---: | :---: |
+| [![Vehicle details](design_refs/13-vehicle-details.png)](design_refs/13-vehicle-details.png) | [![Photo preview](design_refs/14-photo-preview.png)](design_refs/14-photo-preview.png) | [![Edit all parking information](design_refs/15-edit-all-parking-information.png)](design_refs/15-edit-all-parking-information.png) |
 
 ## Getting Started
 

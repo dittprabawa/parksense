@@ -1,0 +1,152 @@
+.stage {
+  display: grid;
+  min-height: 100svh;
+  place-items: center;
+  background: #fff;
+}
+
+.welcome {
+  --surface: #f6f8fd;
+  --ink: #0b1222;
+  --muted: #434e6e;
+  --blue: #007aff;
+  position: relative;
+  width: min(100%, 402px);
+  margin-inline: auto;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: center;
+}
+
+.content {
+  --gap: clamp(12px, 2.3svh, 20px);
+  --action-gap: clamp(16px, 2.75svh, 24px);
+  display: flex;
+  min-height: min(100svh, 874px);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: max(env(safe-area-inset-top), clamp(24px, calc(28svh - 162px), 82px))
+    20px max(env(safe-area-inset-bottom), clamp(20px, 5.27svh, 46px));
+}
+
+.mark {
+  display: block;
+  width: 64px;
+  height: 64px;
+  margin-inline: auto;
+}
+
+.brand {
+  margin: var(--gap, 20px) 0 0;
+  font-size: 1.5625rem;
+  font-weight: 700;
+  line-height: 1.28;
+}
+
+.title {
+  margin: var(--gap) 0 0;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.28125;
+}
+
+.message {
+  max-width: 17.5rem;
+  margin: var(--gap) 0 0;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.375;
+  letter-spacing: 0.02em;
+}
+
+.map {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: clamp(160px, calc(100svh - 430px), 333px);
+  margin-top: var(--gap);
+  border-radius: 20px;
+  object-fit: cover;
+}
+
+.dots {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 11px;
+  margin-block: var(--action-gap);
+}
+
+.dots span {
+  width: 10.5px;
+  height: 10.5px;
+  border-radius: 50%;
+  background: var(--blue);
+}
+
+.primary {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0.75rem 1rem;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
+}
+
+.arrow {
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.primary:hover {
+  background: #006ce2;
+}
+
+.primary:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+
+/* Simulate the device frame in a desktop preview. Phones supply their own system bars. */
+@media (hover: hover) and (pointer: fine) and (min-width: 402px) and (min-height: 740px) {
+  .stage .welcome {
+    border-radius: 48px;
+  }
+
+  .stage .welcome::before,
+  .stage .welcome::after {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    content: "";
+    pointer-events: none;
+  }
+
+  .stage .welcome::before {
+    top: 14px;
+    width: calc(100% - 40px);
+    height: 34px;
+    background: url("/preview-status.png") center / contain no-repeat;
+  }
+
+  .stage .welcome::after {
+    bottom: 14px;
+    width: 134px;
+    height: 5px;
+    border-radius: 999px;
+    background: #000;
+  }
+
+  .content {
+    padding-top: clamp(64px, calc(28svh - 162px), 82px);
+  }
+}
