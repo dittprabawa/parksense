@@ -125,6 +125,23 @@ function NavigateContent() {
     ? isValidCoordinate(record.latitude, record.longitude)
     : false;
 
+  // Pre-warm GPS on page mount so user position is already locked before they tap start
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords: UserCoords = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        };
+        setUserCoords((prev) => prev ?? coords);
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 10000 }
+    );
+  }, []);
+
   // ── Fetch walking route from server ────────────────────────────────────────
   const fetchRoute = useCallback(
     async (origin: UserCoords, force = false) => {
@@ -195,12 +212,18 @@ function NavigateContent() {
       return;
     }
     setGeoError(null);
-    setNavPhase("locating");
+
+    // If pre-warmed user coordinates exist, start navigating immediately without delay!
+    if (userCoords) {
+      setNavPhase("navigating");
+      fetchRoute(userCoords);
+    } else {
+      setNavPhase("locating");
+    }
 
     if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
     window.clearTimeout(expiryRef.current);
     setGpsHeld(false);
-    setUserCoords(null);
     const accept = createWalkingFilter();
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
@@ -238,10 +261,10 @@ function NavigateContent() {
         setNavPhase("idle");
         setGeoError("Location permission denied. Allow location access in your browser settings.");
       },
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
     );
     watchIdRef.current = watchId;
-  }, [fetchRoute]);
+  }, [fetchRoute, userCoords]);
 
   // ── Stop GPS tracking ───────────────────────────────────────────────────────
   const stopNavigation = useCallback(() => {
