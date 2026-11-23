@@ -6,16 +6,16 @@
  * Renders:
  *  - Red parking destination marker (custom SVG pin)
  *  - Blue pulsing current-location marker
- *  - GPS accuracy circle
+ *  - Arrival radius around the vehicle and GPS accuracy circle around the user
  *  - Decoded walking route polyline from Google Routes API
  *  - Zoom / Recenter / Fit-route controls
  *
  * Falls back to LiveParkingMap (Leaflet) when Google Maps key is unavailable.
  */
 
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
-import { isValidCoordinate } from "@/lib/parking-storage";
+import { ARRIVAL_RADIUS_METERS, isValidCoordinate } from "@/lib/parking-storage";
 import type { LiveParkingMapProps } from "./live-parking-map";
 
 // ─── Polyline decoder (Google Maps Encoded Polyline Algorithm) ───────────────
@@ -137,13 +137,11 @@ export default function NavigationMap({
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
-  const mapsLibRef = useRef<google.maps.MapsLibrary | null>(null);
-  const destMarkerRef = useRef<google.maps.Marker | null>(null);
+  const [maps, setMaps] = useState<google.maps.MapsLibrary | null>(null);
   const userMarkerRef = useRef<google.maps.Marker | null>(null);
   const accuracyCircleRef = useRef<google.maps.Circle | null>(null);
   const routePolylineRef = useRef<google.maps.Polyline | null>(null);
   const straightLineRef = useRef<google.maps.Polyline | null>(null);
-  const controlsExposedRef = useRef(false);
   const failedRef = useRef(false);
 
   const destination = useMemo(() => ({ lat: destLat, lng: destLng }), [destLat, destLng]);
@@ -158,51 +156,13 @@ export default function NavigationMap({
 
   // ── Initialize map ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
-    if (!isValidCoordinate(destLat, destLng)) return;
-
     let mounted = true;
     const onFailure = () => { if (mounted) failedRef.current = true; };
     authFailureListeners.add(onFailure);
 
     loadMaps()
       .then((lib) => {
-        if (!mounted || !containerRef.current) return;
-        mapsLibRef.current = lib;
-
-        const map = new lib.Map(containerRef.current, {
-          center: destination,
-          zoom: 17,
-          disableDefaultUI: true,
-          zoomControl: false,
-          clickableIcons: false,
-          gestureHandling: "cooperative",
-          mapTypeId: "roadmap",
-          styles: [
-            // Subtle style – keeps colours from clashing with blue/red markers
-            { featureType: "poi", elementType: "labels", stylers: [{ visibility: "off" }] },
-            { featureType: "transit", elementType: "labels", stylers: [{ visibility: "off" }] },
-          ],
-        });
-        mapRef.current = map;
-
-        // Destination (red P) marker
-        destMarkerRef.current = new google.maps.Marker({
-          map,
-          position: destination,
-          icon: makeDestIcon(),
-          title: `${licensePlate ?? ""} · ${floorZone ?? ""}`,
-          zIndex: 10,
-        });
-
-        const infoWindow = new lib.InfoWindow({
-          content: `<div style="font-size:12px;line-height:1.5;font-family:system-ui,sans-serif">
-            <strong style="color:#0B1222">${licensePlate ?? "Parked Vehicle"}</strong><br/>
-            <span style="color:#5E6E82">${floorZone ?? ""}${locationName ? " · " + locationName : ""}</span><br/>
-            <span style="color:#FF3B30;font-size:11px">🅿 Parking Destination</span>
-          </div>`,
-        });
-        destMarkerRef.current.addListener("click", () => infoWindow.open(map, destMarkerRef.current));
+        if (mounted) setMaps(lib);
       })
       .catch((err: Error) => {
         console.warn("[NavigationMap] Google Maps failed to load:", err.message);
@@ -212,13 +172,67 @@ export default function NavigationMap({
       mounted = false;
       authFailureListeners.delete(onFailure);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destLat, destLng]);
+  }, []);
+
+  useEffect(() => {
+    if (!maps || !containerRef.current || !isValidCoordinate(destination.lat, destination.lng)) return;
+    const map = mapRef.current ?? new maps.Map(containerRef.current, {
+      center: destination,
+      zoom: 17,
+      disableDefaultUI: true,
+      zoomControl: false,
+      clickableIcons: false,
+      gestureHandling: "cooperative",
+      mapTypeId: "roadmap",
+      styles: [
+        { featureType: "poi", elementType: "labels", stylers: [{ visibility: "off" }] },
+        { featureType: "transit", elementType: "labels", stylers: [{ visibility: "off" }] },
+      ],
+    });
+    mapRef.current = map;
+    map.setCenter(destination);
+
+    const marker = new google.maps.Marker({
+      map,
+      position: destination,
+      icon: makeDestIcon(),
+      title: `${licensePlate} · ${floorZone ?? ""}`,
+      zIndex: 10,
+    });
+
+    const arrivalCircle = new maps.Circle({
+      map,
+      center: destination,
+      radius: ARRIVAL_RADIUS_METERS,
+      strokeColor: "#FF3B30",
+      strokeWeight: 2,
+      fillColor: "#FF3B30",
+      fillOpacity: 0.15,
+      clickable: false,
+      zIndex: 2,
+    });
+    const details = document.createElement("div");
+    details.className = "text-xs text-[#5E6E82]";
+    const plate = document.createElement("strong");
+    plate.className = "block text-[#0B1222]";
+    plate.textContent = licensePlate;
+    const label = document.createElement("span");
+    label.className = "block text-[11px] text-[#FF3B30]";
+    label.textContent = "🅿 Parking Destination";
+    details.append(plate, [floorZone, locationName].filter(Boolean).join(" · "), label);
+    const infoWindow = new maps.InfoWindow({ content: details });
+    const clickListener = marker.addListener("click", () => infoWindow.open(map, marker));
+    return () => {
+      clickListener.remove();
+      infoWindow.close();
+      arrivalCircle.setMap(null);
+      marker.setMap(null);
+    };
+  }, [maps, destination, licensePlate, floorZone, locationName]);
 
   // ── Expose controls to parent ────────────────────────────────────────────
-  const exposeControls = useCallback(() => {
-    if (controlsExposedRef.current || !onControlsReady || !mapRef.current) return;
-    controlsExposedRef.current = true;
+  useEffect(() => {
+    if (!maps || !onControlsReady || !mapRef.current) return;
 
     onControlsReady({
       recenterUser() {
@@ -245,7 +259,7 @@ export default function NavigationMap({
         }
       },
     });
-  }, [onControlsReady, user, destination]);
+  }, [maps, onControlsReady, user, destination]);
 
   // ── Update user marker & accuracy circle ─────────────────────────────────
   useEffect(() => {
@@ -265,13 +279,12 @@ export default function NavigationMap({
         userMarkerRef.current.setPosition(user);
       }
 
-      if (userAccuracy && userAccuracy > 0) {
-        const radius = Math.min(Math.max(userAccuracy, 5), 200);
+      if (userAccuracy != null && Number.isFinite(userAccuracy) && userAccuracy > 0) {
         if (!accuracyCircleRef.current) {
           accuracyCircleRef.current = new google.maps.Circle({
             map,
             center: user,
-            radius,
+            radius: userAccuracy,
             strokeColor: "#007AFF",
             strokeOpacity: 0.5,
             strokeWeight: 1,
@@ -282,18 +295,19 @@ export default function NavigationMap({
           });
         } else {
           accuracyCircleRef.current.setCenter(user);
-          accuracyCircleRef.current.setRadius(radius);
+          accuracyCircleRef.current.setRadius(userAccuracy);
         }
+      } else {
+        accuracyCircleRef.current?.setMap(null);
+        accuracyCircleRef.current = null;
       }
-
-      exposeControls();
     } else {
       userMarkerRef.current?.setMap(null);
       userMarkerRef.current = null;
       accuracyCircleRef.current?.setMap(null);
       accuracyCircleRef.current = null;
     }
-  }, [user, userAccuracy, exposeControls]);
+  }, [maps, user, userAccuracy]);
 
   // ── Draw / update route polyline ──────────────────────────────────────────
   useEffect(() => {
@@ -349,8 +363,7 @@ export default function NavigationMap({
         .extend(user);
       map.fitBounds(bounds, 60);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encodedPolyline, userLat, userLng]);
+  }, [maps, encodedPolyline, user, destination]);
 
   return (
     <div

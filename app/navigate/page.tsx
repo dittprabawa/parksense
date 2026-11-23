@@ -36,6 +36,7 @@ import {
   getGoogleMapsUrl,
   getAppleMapsUrl,
   calculateDistanceMeters,
+  getProximityMessage,
   ParkingRecord,
 } from "@/lib/parking-storage";
 import type { NavigationMapControls } from "@/components/navigation-map";
@@ -76,10 +77,10 @@ function formatDistance(meters: number): string {
 interface UserCoords {
   lat: number;
   lng: number;
-  accuracy?: number;
+  accuracy: number;
 }
 
-type NavPhase = "idle" | "locating" | "ready" | "navigating" | "arrived";
+type NavPhase = "idle" | "locating" | "navigating";
 type RouteStatus = "none" | "loading" | "ok" | "error";
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -213,8 +214,10 @@ function NavigateContent() {
     setGeoError(null);
     setNavPhase("locating");
 
-    watchIdRef.current = navigator.geolocation.watchPosition(
+    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    const watchId = navigator.geolocation.watchPosition(
       (pos) => {
+        if (watchIdRef.current !== watchId) return;
         const coords: UserCoords = {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
@@ -223,29 +226,14 @@ function NavigateContent() {
         setUserCoords(coords);
         setGeoError(null);
 
-        setNavPhase((prev) => {
-          if (prev === "locating" || prev === "idle") return "navigating";
-          return prev;
-        });
-
-        // Check arrival: if within 15 m of destination
-        if (hasValidCoordinates && record?.latitude && record.longitude) {
-          const dist = calculateDistanceMeters(
-            coords.lat,
-            coords.lng,
-            record.latitude,
-            record.longitude
-          );
-          if (dist <= 15) {
-            setNavPhase("arrived");
-            setShowArrivalModal(true);
-          }
-        }
+        setNavPhase("navigating");
 
         // Recalculate route
         fetchRoute(coords);
       },
       (err) => {
+        if (watchIdRef.current !== watchId) return;
+        setUserCoords(null);
         setNavPhase("idle");
         switch (err.code) {
           case err.PERMISSION_DENIED:
@@ -265,7 +253,8 @@ function NavigateContent() {
       },
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
-  }, [fetchRoute, hasValidCoordinates, record]);
+    watchIdRef.current = watchId;
+  }, [fetchRoute]);
 
   // ── Stop GPS tracking ───────────────────────────────────────────────────────
   const stopNavigation = useCallback(() => {
@@ -288,6 +277,7 @@ function NavigateContent() {
     return () => {
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
       }
     };
   }, []);
@@ -305,17 +295,15 @@ function NavigateContent() {
     mapControlsRef.current?.fitAll();
   }, []);
 
-  // ── Distance display (straight-line fallback when no route) ────────────────
-  const straightLineInfo = useMemo(() => {
+  const remainingDistanceMeters = useMemo(() => {
     if (!record || !hasValidCoordinates || !userCoords) return null;
     if (typeof record.latitude !== "number" || typeof record.longitude !== "number") return null;
-    const meters = calculateDistanceMeters(
+    return calculateDistanceMeters(
       userCoords.lat,
       userCoords.lng,
       record.latitude,
       record.longitude
     );
-    return { meters, distance: formatDistance(meters) };
   }, [record, hasValidCoordinates, userCoords]);
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -509,17 +497,18 @@ function NavigateContent() {
           </div>
         )}
 
-        {/* Straight-line fallback when no route yet */}
-        {routeStatus !== "ok" && straightLineInfo && (
+        {remainingDistanceMeters !== null && userCoords && (
           <div className="bg-[#F6F8FD] rounded-2xl px-4 py-3 mb-3 flex items-center gap-3 border border-[#EDF2F7] shrink-0">
             <CompassIcon className="w-5 h-5 text-[#5E6E82] shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-[#0B1222] font-bold text-sm">
-                ~{straightLineInfo.distance} away
+                {remainingDistanceMeters.toFixed(1)} m to your vehicle
               </p>
               <p className="text-[#5E6E82] text-[11px]">
-                Straight-line estimate · Walking route{" "}
-                {routeStatus === "loading" ? "loading…" : "unavailable"}
+                Straight-line GPS estimate{routeStatus === "loading" && " · Walking route loading…"}
+              </p>
+              <p role="status" className="mt-1 text-xs font-medium text-[#0B1222] empty:hidden">
+                {getProximityMessage(remainingDistanceMeters, userCoords.accuracy)}
               </p>
             </div>
           </div>
@@ -568,9 +557,10 @@ function NavigateContent() {
           </div>
 
           {/* GPS accuracy line */}
-          {userCoords?.accuracy && (
+          {userCoords && Number.isFinite(userCoords.accuracy) && userCoords.accuracy >= 0 && (
             <p className="text-[11px] text-[#5E6E82] mt-2.5 pt-2.5 border-t border-gray-100 font-mono">
-              GPS accuracy: ±{Math.round(userCoords.accuracy)} m
+              {/* Round the uncertainty up so a fix over the limit never reads as ±2.0 m. */}
+              GPS accuracy: ±{(Math.ceil(userCoords.accuracy * 10) / 10).toFixed(1)} m
             </p>
           )}
         </div>
@@ -619,7 +609,7 @@ function NavigateContent() {
             </p>
 
             {/* Controls: start / stop / recenter */}
-            {navPhase === "idle" || navPhase === "ready" ? (
+            {navPhase === "idle" ? (
               <button
                 type="button"
                 onClick={startNavigation}

@@ -23,6 +23,7 @@ export interface ParkingRecord {
 }
 
 export const STORAGE_KEY = "parksense_parking_records";
+export const ARRIVAL_RADIUS_METERS = 2;
 
 export function formatParkingTimestamp(date: Date = new Date()): string {
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -60,8 +61,15 @@ export function calculateDistanceMeters(
       Math.cos(toRad(lat2)) *
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
+  const c = 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+  return R * c;
+}
+
+export function getProximityMessage(distanceMeters: number, accuracyMeters: number): string | null {
+  if (!Number.isFinite(accuracyMeters) || accuracyMeters < 0 || accuracyMeters > ARRIVAL_RADIUS_METERS) {
+    return "GPS accuracy is insufficient to confirm arrival within 2 meters.";
+  }
+  return distanceMeters <= ARRIVAL_RADIUS_METERS ? "You may be near your vehicle." : null;
 }
 
 export function formatDistanceAndWalkTime(meters: number): { distance: string; walkTime: string } {
