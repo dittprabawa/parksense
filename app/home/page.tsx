@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { MobileShell } from "@/components/mobile-shell";
@@ -15,40 +15,28 @@ import {
   TrashIcon,
   XIcon,
 } from "@/components/icons";
-import {
-  getActiveParkingRecord,
-  isValidCoordinate,
-  updateParkingRecord,
-  ParkingRecord,
-} from "@/lib/parking-storage";
+import { useParking } from "@/lib/use-parking";
+import { ParkingError } from "@/components/parking-error";
+import { messageOf } from "@/lib/supabase";
+import { isValidCoordinate } from "@/lib/parking-storage";
+import { changeParking } from "@/lib/cloud-parking";
 
 export default function HomePage() {
-  const [activeRecord, setActiveRecord] = useState<ParkingRecord | null>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const { records, isLoaded, error } = useParking("active");
+  const activeRecord = records[0];
   const [showEndModal, setShowEndModal] = useState(false);
-
-  useEffect(() => {
-    const syncActive = () => {
-      setActiveRecord(getActiveParkingRecord());
-      setIsLoaded(true);
-    };
-
-    syncActive();
-
-    window.addEventListener("parksense_storage_change", syncActive);
-    window.addEventListener("storage", syncActive);
-    return () => {
-      window.removeEventListener("parksense_storage_change", syncActive);
-      window.removeEventListener("storage", syncActive);
-    };
-  }, []);
-
-  const handleConfirmEndParking = () => {
-    if (!activeRecord) return;
-    updateParkingRecord(activeRecord.id, { status: "past" });
-    setShowEndModal(false);
-    setActiveRecord(null);
-  };
+  const [failure, setFailure] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function handleConfirmEndParking() {
+    if (!activeRecord || busy) return;
+    setBusy(true);
+    try {
+      await changeParking(activeRecord, "end");
+      setShowEndModal(false);
+    } catch (error) { setFailure(messageOf(error)); }
+    finally { setBusy(false); }
+  }
+  if (error) return <ParkingError message={error} />;
 
   const activeHref = activeRecord ? `/navigate?id=${activeRecord.id}` : "/save-parking";
   const hasParkingGps = activeRecord && isValidCoordinate(activeRecord.latitude, activeRecord.longitude);
@@ -239,9 +227,10 @@ export default function HomePage() {
               </p>
 
               <div className="w-full space-y-2.5">
+                {failure && <p role="alert">{failure}</p>}
                 <button
                   type="button"
-                  onClick={handleConfirmEndParking}
+                  disabled={busy} onClick={handleConfirmEndParking}
                   className="w-full py-3.5 px-6 rounded-full bg-[#FF3B30] hover:bg-[#E02E24] text-white font-semibold text-base shadow-sm transition-all active:scale-[0.98]"
                 >
                   End Parking

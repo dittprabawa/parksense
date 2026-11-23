@@ -1,7 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, Suspense, useRef } from "react";
-import Image from "next/image";
+import React, { useState, Suspense, useRef } from "react";
+import { ParkingPhoto } from "@/components/parking-photo";
+import { useParking } from "@/lib/use-parking";
+import { ParkingError } from "@/components/parking-error";
+import { useAccount } from "@/components/account-gate";
+import { messageOf } from "@/lib/supabase";
+import { writeParking, changeParking } from "@/lib/cloud-parking";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
 import { TopHeader } from "@/components/top-header";
@@ -24,11 +29,6 @@ import {
   CompassIcon,
 } from "@/components/icons";
 import {
-  getParkingRecords,
-  getParkingRecordById,
-  getActiveParkingRecord,
-  updateParkingRecord,
-  deleteParkingRecord,
   ParkingRecord,
   VehicleType,
 } from "@/lib/parking-storage";
@@ -38,8 +38,12 @@ function VehicleDetailsContent() {
   const searchParams = useSearchParams();
   const idParam = searchParams.get("id");
 
-  const [record, setRecord] = useState<ParkingRecord | null>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const { records, isLoaded, error } = useParking(idParam ? { id: idParam } : "details");
+  const record = records[0];
+  const user = useAccount();
+  const [original, setOriginal] = useState<ParkingRecord | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
 
   // Modal / Editing states
   const [isEditing, setIsEditing] = useState(false);
@@ -58,42 +62,21 @@ function VehicleDetailsContent() {
   const [editStatus, setEditStatus] = useState<"active" | "past">("active");
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
 
-  // Load record
-  useEffect(() => {
-    const load = () => {
-      let target: ParkingRecord | null = null;
-      if (idParam) {
-        target = getParkingRecordById(idParam);
-      }
-      if (!target) {
-        target = getActiveParkingRecord();
-      }
-      if (!target) {
-        const all = getParkingRecords();
-        target = all.length > 0 ? all[0] : null;
-      }
-
-      setRecord(target);
-      if (target) {
-        setEditType((target.type as VehicleType) || "Motorcycle");
-        setEditPlate(target.licensePlate || "");
-        setEditLocation(target.location || "");
-        setEditFloor(target.floor || (target.floorZone ? target.floorZone.split("–")[0]?.trim() : ""));
-        setEditZone(target.zone || (target.floorZone && target.floorZone.includes("–") ? target.floorZone.split("–")[1]?.trim() : ""));
-        setEditLandmark(target.nearbyLandmark || "");
-        setEditNotes(target.notes || "");
-        setEditPhoto(target.thumbnailUrl || "/motorcycle-b2.png");
-        setEditStatus(target.status || "active");
-      }
-      setIsLoaded(true);
-    };
-
-    load();
-
-    const handleStorage = () => load();
-    window.addEventListener("parksense_storage_change", handleStorage);
-    return () => window.removeEventListener("parksense_storage_change", handleStorage);
-  }, [idParam]);
+  function beginEditing() {
+    if (!record) return;
+    setOriginal(record);
+    setFailure("");
+    setEditType((record.type as VehicleType) || "Motorcycle");
+    setEditPlate(record.licensePlate || "");
+    setEditLocation(record.location || "");
+    setEditFloor(record.floor || (record.floorZone ? record.floorZone.split("–")[0]?.trim() : ""));
+    setEditZone(record.zone || (record.floorZone && record.floorZone.includes("–") ? record.floorZone.split("–")[1]?.trim() : ""));
+    setEditLandmark(record.nearbyLandmark || "");
+    setEditNotes(record.notes || "");
+    setEditPhoto(record.thumbnailUrl || "");
+    setEditStatus(record.status || "active");
+    setIsEditing(true);
+  }
 
   // Handle Photo Upload in Edit Mode
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -110,9 +93,9 @@ function VehicleDetailsContent() {
   };
 
   // Save Edits
-  const handleSaveEdits = (e: React.FormEvent) => {
+  const handleSaveEdits = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!record) return;
+    if (!original || busy) return;
 
     const errors: Record<string, string> = {};
     if (!editPlate.trim()) errors.plate = "License plate is required";
@@ -129,38 +112,39 @@ function VehicleDetailsContent() {
         ? `${editFloor.trim()} – ${editZone.trim()}`
         : editFloor.trim() || editZone.trim();
 
-    const updated = updateParkingRecord(record.id, {
-      type: editType,
-      licensePlate: editPlate.trim().toUpperCase(),
-      location: editLocation.trim(),
-      floorZone: floorZoneFormatted,
-      building: editLocation.trim(),
-      floor: editFloor.trim(),
-      zone: editZone.trim(),
-      nearbyLandmark: editLandmark.trim() || undefined,
-      notes: editNotes.trim() || undefined,
-      thumbnailUrl: editPhoto,
-      status: editStatus,
-      latitude: record.latitude,
-      longitude: record.longitude,
-      accuracy: record.accuracy,
-    });
-
-    if (updated) {
-      setRecord(updated);
+    setBusy(true);
+    setFailure("");
+    try {
+      await writeParking(user.id, original.id, {
+        type: editType,
+        licensePlate: editPlate.trim().toUpperCase(),
+        location: editLocation.trim(),
+        floorZone: floorZoneFormatted,
+        building: editLocation.trim(),
+        floor: editFloor.trim(),
+        zone: editZone.trim(),
+        nearbyLandmark: editLandmark.trim() || undefined,
+        notes: editNotes.trim() || undefined,
+        thumbnailUrl: editPhoto,
+        status: editStatus,
+      }, { previous: original });
       setIsEditing(false);
       setEditErrors({});
-    }
+    } catch (error) { setFailure(messageOf(error)); }
+    finally { setBusy(false); }
   };
 
-  // Confirm Delete
-  const handleConfirmDelete = () => {
-    if (!record) return;
-    deleteParkingRecord(record.id);
-    setShowDeleteModal(false);
-    router.push("/history");
-  };
+  async function handleConfirmDelete() {
+    if (!record || busy) return;
+    setBusy(true);
+    try {
+      await changeParking(record, "delete");
+      router.push("/history");
+    } catch (error) { setFailure(messageOf(error)); setShowDeleteModal(false); }
+    finally { setBusy(false); }
+  }
 
+  if (error) return <ParkingError message={error} />;
   if (!isLoaded) {
     return (
       <MobileShell>
@@ -201,18 +185,15 @@ function VehicleDetailsContent() {
           backHref="/history"
         />
 
+        {failure && <p role="alert">{failure}</p>}
         {!isEditing ? (
           /* View Mode */
           <>
             {/* Vehicle Photo with Status Badge */}
             <div className="relative w-full h-52 rounded-2xl overflow-hidden shadow-xs border border-[#EDF2F7] mb-4 shrink-0 bg-gray-100">
-              <Image
-                src={record.thumbnailUrl || "/motorcycle-b2.png"}
-                fill
+              <ParkingPhoto preview={record.thumbnailUrl} path={record.photoPath}
                 className="object-cover"
                 alt={record.licensePlate}
-                priority
-                unoptimized
               />
               <div className="absolute top-3 right-3">
                 <span
@@ -242,14 +223,14 @@ function VehicleDetailsContent() {
                   label="Type"
                   value={record.type}
                   trailing={<ChevronRightIcon className="w-5 h-5 text-[#8E95A5]" />}
-                  onClick={() => setIsEditing(true)}
+                  onClick={beginEditing}
                 />
                 <Card
                   icon={<LicensePlateIcon className="w-6 h-6" />}
                   label="License Plate"
                   value={record.licensePlate}
                   trailing={<PencilIcon className="w-5 h-5 text-[#0B1222]" />}
-                  onClick={() => setIsEditing(true)}
+                  onClick={beginEditing}
                 />
               </div>
             </div>
@@ -263,14 +244,14 @@ function VehicleDetailsContent() {
                   label="Location"
                   value={record.location}
                   trailing={<ChevronRightIcon className="w-5 h-5 text-[#8E95A5]" />}
-                  onClick={() => setIsEditing(true)}
+                  onClick={beginEditing}
                 />
                 <Card
                   icon={<LayersIcon className="w-6 h-6" />}
                   label="Floor / Zone"
                   value={record.floorZone}
                   trailing={<ChevronRightIcon className="w-5 h-5 text-[#8E95A5]" />}
-                  onClick={() => setIsEditing(true)}
+                  onClick={beginEditing}
                 />
                 {record.nearbyLandmark && (
                   <Card
@@ -278,7 +259,7 @@ function VehicleDetailsContent() {
                     label="Nearby Landmark"
                     value={record.nearbyLandmark}
                     trailing={<ChevronRightIcon className="w-5 h-5 text-[#8E95A5]" />}
-                    onClick={() => setIsEditing(true)}
+                    onClick={beginEditing}
                   />
                 )}
                 {record.notes && (
@@ -287,7 +268,7 @@ function VehicleDetailsContent() {
                     label="Parking Note"
                     value={record.notes}
                     trailing={<ChevronRightIcon className="w-5 h-5 text-[#8E95A5]" />}
-                    onClick={() => setIsEditing(true)}
+                    onClick={beginEditing}
                   />
                 )}
                 {record.latitude && record.longitude && (
@@ -319,7 +300,7 @@ function VehicleDetailsContent() {
 
               <Button
                 variant="secondary"
-                onClick={() => setIsEditing(true)}
+                onClick={beginEditing}
                 icon={<PencilIcon className="w-5 h-5 text-[#0B1222]" />}
               >
                 Edit Details
@@ -339,12 +320,9 @@ function VehicleDetailsContent() {
           <form onSubmit={handleSaveEdits} className="flex flex-col flex-1" noValidate>
             {/* Photo & Change Button */}
             <div className="relative w-full h-48 rounded-2xl overflow-hidden shadow-xs border border-[#EDF2F7] mb-3.5 bg-gray-100 shrink-0">
-              <Image
-                src={editPhoto || "/motorcycle-b2.png"}
-                fill
+              <ParkingPhoto preview={editPhoto} path={original?.photoPath}
                 className="object-cover"
                 alt="Edit Vehicle"
-                unoptimized
               />
               <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                 <button
@@ -507,7 +485,7 @@ function VehicleDetailsContent() {
 
             {/* Edit Actions */}
             <div className="mt-auto space-y-2 pt-2">
-              <Button type="submit" variant="primary">
+              <Button disabled={busy} type="submit" variant="primary">
                 Save Changes
               </Button>
               <Button
@@ -560,7 +538,7 @@ function VehicleDetailsContent() {
               <div className="w-full space-y-2.5">
                 <button
                   type="button"
-                  onClick={handleConfirmDelete}
+                  disabled={busy} onClick={handleConfirmDelete}
                   className="w-full py-3.5 px-6 rounded-full bg-[#FF3B30] hover:bg-[#E02E24] text-white font-semibold text-base shadow-sm transition-all active:scale-[0.98]"
                 >
                   Delete Record

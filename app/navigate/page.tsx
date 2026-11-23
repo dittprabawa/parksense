@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import React, {
   useState,
   useEffect,
@@ -8,9 +9,11 @@ import React, {
   Suspense,
   useMemo,
 } from "react";
-import Image from "next/image";
+import { ParkingPhoto } from "@/components/parking-photo";
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { useParking } from "@/lib/use-parking";
+import { ParkingError } from "@/components/parking-error";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
 import { TopHeader } from "@/components/top-header";
@@ -29,15 +32,11 @@ import {
   ArrowPathIcon,
 } from "@/components/icons";
 import {
-  getParkingRecordById,
-  getActiveParkingRecord,
-  getParkingRecords,
   isValidCoordinate,
   getGoogleMapsUrl,
   getAppleMapsUrl,
   calculateDistanceMeters,
   getProximityMessage,
-  ParkingRecord,
 } from "@/lib/parking-storage";
 import type { NavigationMapControls } from "@/components/navigation-map";
 
@@ -92,28 +91,9 @@ function NavigateContent() {
   const idParam = searchParams.get("id");
 
   // ── Parking record ──────────────────────────────────────────────────────────
-  const [record, setRecord] = useState<ParkingRecord | null>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const { records, isLoaded, error } = useParking(idParam ? { id: idParam } : "active");
+  const record = records[0];
 
-  useEffect(() => {
-    const load = () => {
-      let target: ParkingRecord | null = null;
-      if (idParam) target = getParkingRecordById(idParam);
-      if (!target) target = getActiveParkingRecord();
-      if (!target) {
-        const all = getParkingRecords();
-        target = all.length > 0 ? all[0] : null;
-      }
-      setRecord(target);
-      setIsLoaded(true);
-    };
-    load();
-    const handleStorage = () => load();
-    window.addEventListener("parksense_storage_change", handleStorage);
-    return () => window.removeEventListener("parksense_storage_change", handleStorage);
-  }, [idParam]);
-
-  // ── GPS / Navigation state ──────────────────────────────────────────────────
   const [userCoords, setUserCoords] = useState<UserCoords | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
   const [navPhase, setNavPhase] = useState<NavPhase>("idle");
@@ -309,6 +289,7 @@ function NavigateContent() {
   // ════════════════════════════════════════════════════════════════════════════
   //  Render: loading
   // ════════════════════════════════════════════════════════════════════════════
+  if (error) return <ParkingError message={error} />;
   if (!isLoaded) {
     return (
       <MobileShell>
@@ -452,12 +433,9 @@ function NavigateContent() {
             />
             <div className="relative z-10 m-2.5 bg-white/95 backdrop-blur-md rounded-xl p-2.5 shadow-sm border border-black/5 flex items-center gap-2.5">
               <div className="relative w-10 h-10 rounded-lg overflow-hidden shrink-0 border border-gray-100">
-                <Image
-                  src={record.thumbnailUrl || "/motorcycle-b2.png"}
-                  fill
+                <ParkingPhoto preview={record.thumbnailUrl} path={record.photoPath}
                   className="object-cover"
                   alt={record.licensePlate}
-                  unoptimized
                 />
               </div>
               <div className="min-w-0 flex-1">
@@ -529,12 +507,9 @@ function NavigateContent() {
         <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-3 shrink-0">
           <div className="flex items-center gap-3">
             <div className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 border border-gray-100 bg-[#F6F8FD]">
-              <Image
-                src={record.thumbnailUrl || "/motorcycle-b2.png"}
-                fill
+              <ParkingPhoto preview={record.thumbnailUrl} path={record.photoPath}
                 className="object-cover"
                 alt={record.licensePlate}
-                unoptimized
               />
             </div>
             <div className="min-w-0 flex-1">

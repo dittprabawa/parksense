@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { AccountGate } from "@/components/account-gate";
 
 export const metadata: Metadata = {
   title: "ParkSense",
@@ -22,7 +23,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body><AccountGate>{children}</AccountGate></body>
     </html>
   );
 }

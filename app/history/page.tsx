@@ -1,41 +1,21 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import Image from "next/image";
+import React, { useState } from "react";
+import { ParkingPhoto } from "@/components/parking-photo";
 import Link from "next/link";
 import { MobileShell } from "@/components/mobile-shell";
 import { TopHeader } from "@/components/top-header";
 import { BottomNav } from "@/components/bottom-nav";
 import { ChevronRightIcon, CameraIcon } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { getParkingRecords, ParkingRecord } from "@/lib/parking-storage";
+import { useParking } from "@/lib/use-parking";
+import { ParkingError } from "@/components/parking-error";
+import { LocalImport } from "@/components/local-import";
 
 export default function HistoryPage() {
   const [filter, setFilter] = useState<"all" | "active" | "past">("all");
-  const [records, setRecords] = useState<ParkingRecord[]>([]);
-  const [isLoaded, setIsLoaded] = useState(false);
-
-  // Load records from localStorage on mount and subscribe to updates
-  useEffect(() => {
-    const load = () => {
-      setRecords(getParkingRecords());
-      setIsLoaded(true);
-    };
-
-    load();
-
-    const handleStorageChange = () => {
-      load();
-    };
-
-    window.addEventListener("parksense_storage_change", handleStorageChange);
-    window.addEventListener("storage", handleStorageChange);
-
-    return () => {
-      window.removeEventListener("parksense_storage_change", handleStorageChange);
-      window.removeEventListener("storage", handleStorageChange);
-    };
-  }, []);
+  const { records, isLoaded, error } = useParking("all");
+  if (error) return <ParkingError message={error} />;
 
   const filteredRecords = records.filter((record) => {
     if (filter === "all") return true;
@@ -47,6 +27,7 @@ export default function HistoryPage() {
       <div className="flex flex-col flex-1 pb-2">
         <TopHeader title="History" backHref="/home" />
 
+        <LocalImport />
         {/* Filter Segmented Control */}
         <div className="flex bg-[#E8EDF5] rounded-full p-1 mb-5 shrink-0" role="tablist" aria-label="Filter records">
           <button
@@ -136,12 +117,9 @@ export default function HistoryPage() {
                   className="flex items-center gap-3.5 bg-white rounded-2xl p-3 border border-[#EDF2F7] shadow-xs active:bg-[#F9FAFC] transition-colors group"
                 >
                   <div className="relative w-16 h-16 rounded-xl overflow-hidden shrink-0 border border-gray-100 bg-gray-50">
-                    <Image
-                      src={item.thumbnailUrl || "/motorcycle-b2.png"}
-                      fill
+                    <ParkingPhoto preview={item.thumbnailUrl} path={item.photoPath}
                       className="object-cover group-hover:scale-105 transition-transform duration-200"
                       alt={item.licensePlate}
-                      unoptimized
                     />
                   </div>
 

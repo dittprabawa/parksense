@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import Image from "next/image";
+import { useAccount } from "@/components/account-gate";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
@@ -15,6 +16,7 @@ import {
 
 export default function TakePhotoPage() {
   const router = useRouter();
+  const user = useAccount();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const nativeCameraInputRef = useRef<HTMLInputElement>(null);
@@ -81,8 +83,7 @@ export default function TakePhotoPage() {
   // Handle Photo Capture from Live Video Stream
   const captureFrame = () => {
     if (!videoRef.current || !canvasRef.current || !cameraActive) {
-      // Fallback: If camera stream is not live, use default sample vehicle photo
-      saveAndProceed("/motorcycle-b2.png");
+      nativeCameraInputRef.current?.click();
       return;
     }
 
@@ -99,7 +100,8 @@ export default function TakePhotoPage() {
       const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
       saveAndProceed(dataUrl);
     } else {
-      saveAndProceed("/motorcycle-b2.png");
+      setIsCapturing(false);
+      setCameraError("Camera unavailable. Choose a photo or continue without one.");
     }
   };
 
@@ -121,9 +123,11 @@ export default function TakePhotoPage() {
   const saveAndProceed = (photoDataUrl: string) => {
     if (typeof window !== "undefined") {
       try {
-        sessionStorage.setItem("parksense_captured_photo", photoDataUrl);
-      } catch (err) {
-        console.error("Failed to store captured photo:", err);
+        sessionStorage.setItem("parksense-photo:" + user.id, photoDataUrl);
+      } catch {
+        setIsCapturing(false);
+        setCameraError("Photo is too large for this device. Choose a smaller image.");
+        return;
       }
     }
     router.push("/save-parking");
@@ -224,22 +228,6 @@ export default function TakePhotoPage() {
             }`}
           />
 
-          {/* Fallback Viewfinder if video unavailable or desktop */}
-          {!cameraActive && (
-            <div className="absolute inset-0 w-full h-full bg-neutral-900 flex flex-col items-center justify-center">
-              <div className="relative w-full h-full">
-                <Image
-                  src="/motorcycle-b2.png"
-                  fill
-                  className="object-cover opacity-80"
-                  alt="Camera placeholder"
-                  priority
-                  unoptimized
-                />
-              </div>
-            </div>
-          )}
-
           {/* Figma Focus Box (Rounded Rect Frame from design_refs/09-take-vehicle-photo.png) */}
           <div className="relative z-10 w-[82%] h-[68%] rounded-3xl border-2 border-white/90 pointer-events-none shadow-[0_0_0_9999px_rgba(0,0,0,0.35)] flex flex-col justify-between p-4 transition-all">
             <div className="flex justify-between items-start">
@@ -288,6 +276,7 @@ export default function TakePhotoPage() {
             </button>
           </div>
 
+          <button className="mb-3 text-sm" onClick={() => { sessionStorage.removeItem("parksense-photo:" + user.id); router.push("/save-parking"); }}>Continue without a photo</button>
           <div className="w-full flex items-center justify-around max-w-[340px]">
             {/* Gallery / Library Button */}
             <button

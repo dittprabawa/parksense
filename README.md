@@ -26,6 +26,10 @@ Select a screenshot to view it at full size.
 | :---: | :---: | :---: |
 | [![Vehicle details](design_refs/13-vehicle-details.png)](design_refs/13-vehicle-details.png) | [![Photo preview](design_refs/14-photo-preview.png)](design_refs/14-photo-preview.png) | [![Edit all parking information](design_refs/15-edit-all-parking-information.png)](design_refs/15-edit-all-parking-information.png) |
 
+## Supabase
+
+Set up the database, email sign-in, private photos and local history import using the [ParkSense setup guide](supabase/SETUP.md).
+
 ## Getting Started
 
 First, run the development server:

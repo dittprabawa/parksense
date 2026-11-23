@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import Image from "next/image";
+import { ParkingPhoto } from "@/components/parking-photo";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
@@ -21,30 +21,36 @@ import {
   CompassIcon,
   XIcon,
 } from "@/components/icons";
-import { saveParkingRecord, ParkingRecord, VehicleType } from "@/lib/parking-storage";
+import { useAccount } from "@/components/account-gate";
+import { messageOf } from "@/lib/supabase";
+import { readParking, writeParking } from "@/lib/cloud-parking";
+import { ParkingRecord, VehicleType } from "@/lib/parking-storage";
 
 export default function SaveParkingPage() {
   const router = useRouter();
+  const user = useAccount();
+  const draftKey = "parksense-photo:" + user.id;
+  const requestId = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form State
   const [vehicleType, setVehicleType] = useState<VehicleType>("Motorcycle");
-  const [licensePlate, setLicensePlate] = useState("DK 1234 AB");
-  const [building, setBuilding] = useState("Campus Parking – Building A");
-  const [floor, setFloor] = useState("B2");
-  const [zone, setZone] = useState("Zone C");
-  const [nearbyLandmark, setNearbyLandmark] = useState("Near Elevator & South Exit");
+  const [licensePlate, setLicensePlate] = useState("");
+  const [building, setBuilding] = useState("");
+  const [floor, setFloor] = useState("");
+  const [zone, setZone] = useState("");
+  const [nearbyLandmark, setNearbyLandmark] = useState("");
   const [notes, setNotes] = useState("");
   const [photoUrl, setPhotoUrl] = useState(() => {
     if (typeof window !== "undefined") {
       try {
-        const captured = sessionStorage.getItem("parksense_captured_photo");
+        const captured = sessionStorage.getItem(draftKey);
         if (captured) return captured;
       } catch {}
     }
-    return "/motorcycle-b2.png";
+    return "";
   });
-  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
 
   // UI state
@@ -102,9 +108,9 @@ export default function SaveParkingPage() {
   };
 
   // Submission
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validateForm()) return;
+    if (isSubmitting || !validateForm()) return;
 
     setIsSubmitting(true);
 
@@ -113,7 +119,7 @@ export default function SaveParkingPage() {
         ? `${floor.trim()} – ${zone.trim()}`
         : floor.trim() || zone.trim();
 
-    const record = saveParkingRecord({
+    const input = {
       type: vehicleType,
       licensePlate: licensePlate.trim().toUpperCase(),
       location: building.trim(),
@@ -125,16 +131,20 @@ export default function SaveParkingPage() {
       notes: notes.trim() || undefined,
       latitude: gpsCoords?.lat,
       longitude: gpsCoords?.lng,
-      status: "active",
-      thumbnailUrl: photoUrl || "/motorcycle-b2.png",
-    });
-
-    if (typeof window !== "undefined") {
-      sessionStorage.removeItem("parksense_captured_photo");
-    }
-    setSavedRecord(record);
-    setIsSubmitting(false);
-    setShowSuccessModal(true);
+      accuracy: gpsCoords?.accuracy,
+      status: "active" as const,
+      thumbnailUrl: photoUrl,
+    };
+    try {
+      requestId.current ??= crypto.randomUUID();
+      const id = await writeParking(user.id, requestId.current, input);
+      const [saved] = await readParking(user.id, { id });
+      if (!saved) throw new Error("The saved record could not be confirmed. Check History before retrying.");
+      try { sessionStorage.removeItem(draftKey); } catch {}
+      setSavedRecord(saved);
+      setShowSuccessModal(true);
+    } catch (error) { setErrors({ submit: messageOf(error) }); }
+    finally { setIsSubmitting(false); }
   };
 
   return (
@@ -145,13 +155,9 @@ export default function SaveParkingPage() {
         <form onSubmit={handleSubmit} className="flex flex-col flex-1" noValidate>
           {/* Captured Vehicle Photo Box */}
           <div className="relative w-full h-56 rounded-2xl overflow-hidden shadow-xs border border-[#EDF2F7] mb-5 bg-[#0B1222]/5 shrink-0 group">
-            <Image
-              src={photoUrl}
-              fill
+            <ParkingPhoto preview={photoUrl}
               className="object-cover"
               alt="Vehicle preview"
-              priority
-              unoptimized
             />
 
             {/* Photo Action Overlay */}
@@ -436,7 +442,7 @@ export default function SaveParkingPage() {
                     setGpsLoading(true);
                     navigator.geolocation.getCurrentPosition(
                       (pos) => {
-                        setGpsCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+                        setGpsCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
                         setGpsLoading(false);
                       },
                       () => setGpsLoading(false),
@@ -474,6 +480,7 @@ export default function SaveParkingPage() {
             </div>
           </div>
 
+          {errors.submit && <p role="alert">{errors.submit}</p>}
           {/* Submit Action */}
           <div className="mt-auto pt-2">
             <Button type="submit" variant="primary" disabled={isSubmitting}>
@@ -516,12 +523,9 @@ export default function SaveParkingPage() {
               {/* Record Summary Card */}
               <div className="w-full bg-[#F6F8FD] rounded-2xl p-3 border border-[#EDF2F7] flex items-center gap-3 text-left mb-5">
                 <div className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 border border-gray-200">
-                  <Image
-                    src={savedRecord.thumbnailUrl}
-                    fill
+                  <ParkingPhoto preview={savedRecord.thumbnailUrl} path={savedRecord.photoPath}
                     className="object-cover"
                     alt={savedRecord.licensePlate}
-                    unoptimized
                   />
                 </div>
                 <div className="min-w-0 flex-1">

@@ -1,4 +1,8 @@
-import React from "react";
+"use client";
+
+import { useState } from "react";
+import { useAccount } from "@/components/account-gate";
+import { messageOf, supabase } from "@/lib/supabase";
 import Link from "next/link";
 import { MobileShell } from "@/components/mobile-shell";
 import { TopHeader } from "@/components/top-header";
@@ -15,6 +19,15 @@ import {
 } from "@/components/icons";
 
 export default function ProfilePage() {
+  const user = useAccount();
+  const [error, setError] = useState("");
+  async function logout() {
+    try {
+      try { sessionStorage.removeItem("parksense-photo:" + user.id); } catch {}
+      const { error } = await supabase().auth.signOut({ scope: "local" });
+      if (error) throw error;
+    } catch (error) { setError(messageOf(error)); }
+  }
   const menuItems = [
     { label: "Edit Profile", icon: <PencilIcon className="w-5 h-5 text-[#0B1222]" />, href: "/profile" },
     { label: "Saved Vehicles", icon: <CarIcon className="w-5 h-5 text-[#0B1222]" />, href: "/vehicle-details" },
@@ -35,10 +48,10 @@ export default function ProfilePage() {
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-xl font-bold text-[#0B1222] leading-tight truncate">
-              Raditya Putra
+              Your account
             </h2>
             <p className="text-sm text-[#5E6E82] mt-0.5 truncate">
-              raditya@parksense.app
+              {user.email}
             </p>
           </div>
         </div>
@@ -64,13 +77,14 @@ export default function ProfilePage() {
 
         {/* Log Out Button */}
         <div className="my-3">
-          <Link
-            href="/login"
+          {error && <p role="alert">{error}</p>}
+          <button
+            onClick={logout}
             className="w-full bg-white rounded-full py-3.5 border border-[#EDF2F7] shadow-xs flex items-center justify-center gap-2 text-[#FF3B30] font-semibold hover:bg-red-50/20 active:scale-[0.98] transition-all no-underline"
           >
             <TrashIcon className="w-5 h-5 text-[#FF3B30]" />
             <span>Log Out</span>
-          </Link>
+          </button>
         </div>
 
         {/* Bottom Tab Bar */}
