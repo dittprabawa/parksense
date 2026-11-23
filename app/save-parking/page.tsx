@@ -1,7 +1,9 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { ParkingPhoto } from "@/components/parking-photo";
+import dynamic from "next/dynamic";
+import type { Pin, Fix } from "@/components/parking-pin-map";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
@@ -25,6 +27,8 @@ import { useAccount } from "@/components/account-gate";
 import { messageOf } from "@/lib/supabase";
 import { readParking, writeParking } from "@/lib/cloud-parking";
 import { ParkingRecord, VehicleType } from "@/lib/parking-storage";
+
+const ParkingPinMap = dynamic(() => import("@/components/parking-pin-map"), { ssr: false });
 
 export default function SaveParkingPage() {
   const router = useRouter();
@@ -50,8 +54,66 @@ export default function SaveParkingPage() {
     }
     return "";
   });
-  const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
+  const [gpsCoords, setGpsCoords] = useState<Pin | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
+
+  const [gpsFix, setGpsFix] = useState<Fix | null>(null);
+  const [gpsMessage, setGpsMessage] = useState("");
+  const cancelGps = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelGps.current?.(), []);
+
+  function sampleGps() {
+    if (!navigator.geolocation) {
+      setGpsMessage("GPS is unavailable. You can save the floor and zone.");
+      return;
+    }
+    cancelGps.current?.();
+    setGpsLoading(true);
+    setGpsMessage("Stand beside your vehicle. Collecting GPS readings (0/5)…");
+    let best: Fix | null = null;
+    const times = new Set<number>();
+    let active = true;
+    let next = 0;
+    const deadline = window.setTimeout(() => finish(), 15000);
+    function stop() {
+      active = false;
+      window.clearTimeout(deadline);
+      window.clearTimeout(next);
+      cancelGps.current = null;
+    }
+    function finish(message?: string) {
+      if (!active) return;
+      stop();
+      setGpsLoading(false);
+      if (best && times.size >= 2) {
+        setGpsFix(best);
+        setGpsCoords(best);
+        setGpsMessage("Selected the most precise of " + times.size + " readings.");
+      } else {
+        setGpsMessage(message ?? "Too few fresh GPS readings. Retry or save without changing the location.");
+      }
+    }
+    cancelGps.current = stop;
+    function read() {
+      navigator.geolocation.getCurrentPosition(position => {
+        if (!active) return;
+        const { latitude: lat, longitude: lng, accuracy } = position.coords;
+        if (!times.has(position.timestamp) && Number.isFinite(accuracy) && accuracy >= 0 &&
+            Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+          times.add(position.timestamp);
+          if (!best || accuracy <= best.accuracy) best = { lat, lng, accuracy };
+        }
+        if (times.size >= 5) return finish();
+        setGpsMessage("Stand beside your vehicle. Collecting GPS readings (" + times.size + "/5)…");
+        next = window.setTimeout(read, 1000);
+      }, error => {
+        if (!active) return;
+        if (error.code === 1) finish("Location permission denied. Allow precise location or save without GPS.");
+        else next = window.setTimeout(read, 1000);
+      }, { maximumAge: 0, enableHighAccuracy: true, timeout: 4000 });
+    }
+    read();
+  }
 
   // UI state
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -110,7 +172,7 @@ export default function SaveParkingPage() {
   // Submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSubmitting || !validateForm()) return;
+    if (gpsLoading || isSubmitting || !validateForm()) return;
 
     setIsSubmitting(true);
 
@@ -420,41 +482,24 @@ export default function SaveParkingPage() {
                   <CompassIcon className="w-5 h-5 text-[#007AFF]" />
                   <span className="text-xs text-[#0B1222] font-semibold">GPS Coordinates (Optional)</span>
                 </div>
-                {gpsCoords ? (
-                  <button
-                    type="button"
-                    onClick={() => setGpsCoords(null)}
-                    className="text-[11px] text-[#FF3B30] hover:underline"
-                  >
-                    Clear GPS
-                  </button>
-                ) : null}
               </div>
-              {gpsCoords ? (
-                <p className="text-xs font-mono text-[#34C759]">
-                  ✓ Recorded: {gpsCoords.lat.toFixed(5)}, {gpsCoords.lng.toFixed(5)}
-                </p>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!navigator.geolocation) return;
-                    setGpsLoading(true);
-                    navigator.geolocation.getCurrentPosition(
-                      (pos) => {
-                        setGpsCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
-                        setGpsLoading(false);
-                      },
-                      () => setGpsLoading(false),
-                      { enableHighAccuracy: true, timeout: 10000 }
-                    );
-                  }}
-                  disabled={gpsLoading}
-                  className="text-xs font-semibold text-[#007AFF] hover:underline flex items-center gap-1.5"
-                >
-                  {gpsLoading ? "Acquiring GPS..." : "+ Record Current GPS Coordinates"}
+              <p role="status" className="text-xs mb-2">{gpsMessage}</p>
+              {gpsFix && gpsCoords && <>
+                <ParkingPinMap fix={gpsFix} onMove={setGpsCoords} />
+                <p className="mt-2 text-xs">GPS estimate ±{Math.ceil(gpsFix.accuracy)} m (blue circle). Drag the pin or tap the map to adjust.</p>
+                <p className="text-xs">{gpsCoords.accuracy === undefined ? "Manual pin" : "GPS pin"} · {gpsCoords.lat.toFixed(6)}, {gpsCoords.lng.toFixed(6)}</p>
+              </>}
+              <div className="flex gap-4 mt-2 text-sm text-[#007AFF]">
+                <button type="button" disabled={gpsLoading || isSubmitting} onClick={sampleGps}>
+                  {gpsFix ? "Retake GPS" : "Record GPS"}
                 </button>
-              )}
+                {gpsLoading && <button type="button" onClick={() => {
+                  cancelGps.current?.(); setGpsLoading(false); setGpsMessage("GPS capture cancelled.");
+                }}>Cancel</button>}
+                {gpsFix && !gpsLoading && <button type="button" disabled={isSubmitting} onClick={() => {
+                  setGpsFix(null); setGpsCoords(null); setGpsMessage("");
+                }}>Clear GPS</button>}
+              </div>
             </div>
 
             {/* Optional Parking Note */}
@@ -483,7 +528,7 @@ export default function SaveParkingPage() {
           {errors.submit && <p role="alert">{errors.submit}</p>}
           {/* Submit Action */}
           <div className="mt-auto pt-2">
-            <Button type="submit" variant="primary" disabled={isSubmitting}>
+            <Button type="submit" variant="primary" disabled={isSubmitting || gpsLoading}>
               {isSubmitting ? "Saving Parking..." : "Save Parking"}
             </Button>
           </div>
