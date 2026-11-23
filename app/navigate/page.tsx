@@ -1,9 +1,16 @@
 "use client";
 
-import React, { useState, useEffect, Suspense, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  Suspense,
+  useMemo,
+} from "react";
 import Image from "next/image";
 import Link from "next/link";
-import ParkingMap from "@/components/parking-map";
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
 import { TopHeader } from "@/components/top-header";
@@ -19,6 +26,7 @@ import {
   ExternalLinkIcon,
   ExclamationCircleIcon,
   XIcon,
+  ArrowPathIcon,
 } from "@/components/icons";
 import {
   getParkingRecordById,
@@ -28,36 +36,69 @@ import {
   getGoogleMapsUrl,
   getAppleMapsUrl,
   calculateDistanceMeters,
-  formatDistanceAndWalkTime,
   ParkingRecord,
 } from "@/lib/parking-storage";
+import type { NavigationMapControls } from "@/components/navigation-map";
 
+// ── Lazy-load the Google Maps navigation component (client-only) ──────────────
+const NavigationMap = dynamic(() => import("@/components/navigation-map"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-72 rounded-2xl bg-slate-100 animate-pulse border border-[#EDF2F7] flex items-center justify-center text-xs text-[#5E6E82]">
+      Loading map…
+    </div>
+  ),
+});
+
+// Leaflet fallback (used when Google Maps is unavailable)
+const LeafletMap = dynamic(() => import("@/components/live-parking-map"), { ssr: false });
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+/** Minimum distance (metres) the user must move before we recalculate the route */
+const REROUTE_THRESHOLD_METERS = 25;
+/** Minimum ms between route fetch calls */
+const REROUTE_THROTTLE_MS = 15_000;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+function formatDistance(meters: number): string {
+  if (meters < 1000) return `${meters} m`;
+  return `${(meters / 1000).toFixed(1)} km`;
+}
+
+// ── Types ─────────────────────────────────────────────────="────────────────────
+interface UserCoords {
+  lat: number;
+  lng: number;
+  accuracy?: number;
+}
+
+type NavPhase = "idle" | "locating" | "ready" | "navigating" | "arrived";
+type RouteStatus = "none" | "loading" | "ok" | "error";
+
+// ════════════════════════════════════════════════════════════════════════════════
+//  NavigateContent
+// ════════════════════════════════════════════════════════════════════════════════
 function NavigateContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const idParam = searchParams.get("id");
 
+  // ── Parking record ──────────────────────────────────────────────────────────
   const [record, setRecord] = useState<ParkingRecord | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  // Geolocation state
-  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
-  const [geoStatus, setGeoStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [geoError, setGeoError] = useState<string | null>(null);
-
-  // Arrival Confirmation Modal state
-  const [showArrivalModal, setShowArrivalModal] = useState(false);
-
-  // Load record
   useEffect(() => {
     const load = () => {
       let target: ParkingRecord | null = null;
-      if (idParam) {
-        target = getParkingRecordById(idParam);
-      }
-      if (!target) {
-        target = getActiveParkingRecord();
-      }
+      if (idParam) target = getParkingRecordById(idParam);
+      if (!target) target = getActiveParkingRecord();
       if (!target) {
         const all = getParkingRecords();
         target = all.length > 0 ? all[0] : null;
@@ -65,86 +106,234 @@ function NavigateContent() {
       setRecord(target);
       setIsLoaded(true);
     };
-
     load();
-
     const handleStorage = () => load();
     window.addEventListener("parksense_storage_change", handleStorage);
     return () => window.removeEventListener("parksense_storage_change", handleStorage);
   }, [idParam]);
 
-  // Request browser Geolocation ONLY on explicit user button click
-  const handleGetLocation = () => {
+  // ── GPS / Navigation state ──────────────────────────────────────────────────
+  const [userCoords, setUserCoords] = useState<UserCoords | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
+  const [navPhase, setNavPhase] = useState<NavPhase>("idle");
+  const watchIdRef = useRef<number | null>(null);
+
+  // ── Route state ─────────────────────────────────────────────────────────────
+  const [encodedPolyline, setEncodedPolyline] = useState<string | null>(null);
+  const [routeDistance, setRouteDistance] = useState<number | null>(null);
+  const [routeDuration, setRouteDuration] = useState<number | null>(null);
+  const [routeStatus, setRouteStatus] = useState<RouteStatus>("none");
+  const [routeError, setRouteError] = useState<string | null>(null);
+
+  // Throttle & dedup tracking refs
+  const lastRouteFetchRef = useRef<number>(0);
+  const lastRouteOriginRef = useRef<UserCoords | null>(null);
+  const isFetchingRouteRef = useRef(false);
+
+  // ── Map controls ref (from NavigationMap) ───────────────────────────────────
+  const mapControlsRef = useRef<NavigationMapControls | null>(null);
+
+  // ── Arrival modal ───────────────────────────────────────────────────────────
+  const [showArrivalModal, setShowArrivalModal] = useState(false);
+
+  // Convenience flag
+  const hasValidCoordinates = record
+    ? isValidCoordinate(record.latitude, record.longitude)
+    : false;
+
+  // ── Fetch walking route from server ────────────────────────────────────────
+  const fetchRoute = useCallback(
+    async (origin: UserCoords, force = false) => {
+      if (!record || !hasValidCoordinates) return;
+      if (typeof record.latitude !== "number" || typeof record.longitude !== "number") return;
+      if (isFetchingRouteRef.current) return;
+
+      const now = Date.now();
+      if (!force && now - lastRouteFetchRef.current < REROUTE_THROTTLE_MS) return;
+
+      // Check whether user moved far enough to justify a new fetch
+      if (!force && lastRouteOriginRef.current) {
+        const moved = calculateDistanceMeters(
+          lastRouteOriginRef.current.lat,
+          lastRouteOriginRef.current.lng,
+          origin.lat,
+          origin.lng
+        );
+        if (moved < REROUTE_THRESHOLD_METERS) return;
+      }
+
+      isFetchingRouteRef.current = true;
+      lastRouteFetchRef.current = now;
+      lastRouteOriginRef.current = origin;
+      setRouteStatus("loading");
+      setRouteError(null);
+
+      try {
+        const res = await fetch("/api/walking-route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            originLat: origin.lat,
+            originLng: origin.lng,
+            destLat: record.latitude,
+            destLng: record.longitude,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (data.ok) {
+          setEncodedPolyline(data.encodedPolyline);
+          setRouteDistance(data.distanceMeters);
+          setRouteDuration(data.durationSeconds);
+          setRouteStatus("ok");
+        } else {
+          // Routes API returned a logical error (no route, bad coords, etc.)
+          setRouteStatus("error");
+          setRouteError(data.error ?? "Could not calculate route.");
+          // Keep showing straight-line polyline / previous route
+        }
+      } catch (err) {
+        console.warn("[navigate] Route fetch error:", err);
+        setRouteStatus("error");
+        setRouteError("Network error while fetching route. Check your connection.");
+      } finally {
+        isFetchingRouteRef.current = false;
+      }
+    },
+    [record, hasValidCoordinates]
+  );
+
+  // ── Start GPS tracking ──────────────────────────────────────────────────────
+  const startNavigation = useCallback(() => {
     if (!navigator.geolocation) {
-      setGeoStatus("error");
       setGeoError("Geolocation is not supported by your browser.");
       return;
     }
-
-    setGeoStatus("loading");
     setGeoError(null);
+    setNavPhase("locating");
 
-    navigator.geolocation.getCurrentPosition(
+    watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        setUserCoords({
+        const coords: UserCoords = {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
+        };
+        setUserCoords(coords);
+        setGeoError(null);
+
+        setNavPhase((prev) => {
+          if (prev === "locating" || prev === "idle") return "navigating";
+          return prev;
         });
-        setGeoStatus("success");
+
+        // Check arrival: if within 15 m of destination
+        if (hasValidCoordinates && record?.latitude && record.longitude) {
+          const dist = calculateDistanceMeters(
+            coords.lat,
+            coords.lng,
+            record.latitude,
+            record.longitude
+          );
+          if (dist <= 15) {
+            setNavPhase("arrived");
+            setShowArrivalModal(true);
+          }
+        }
+
+        // Recalculate route
+        fetchRoute(coords);
       },
       (err) => {
-        setGeoStatus("error");
+        setNavPhase("idle");
         switch (err.code) {
           case err.PERMISSION_DENIED:
-            setGeoError("Location permission denied. Please allow location access in your browser settings to acquire current coordinates.");
+            setGeoError(
+              "Location permission denied. Please allow location access in your browser settings."
+            );
             break;
           case err.POSITION_UNAVAILABLE:
-            setGeoError("Location unavailable. GPS signal could not be determined.");
+            setGeoError("GPS signal unavailable. Move to an open area and try again.");
             break;
           case err.TIMEOUT:
             setGeoError("Location request timed out. Please try again.");
             break;
           default:
-            setGeoError("An unexpected error occurred while requesting GPS location.");
-            break;
+            setGeoError("An unexpected GPS error occurred.");
         }
       },
-      {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0,
-      }
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
-  };
+  }, [fetchRoute, hasValidCoordinates, record]);
 
-  const hasValidCoordinates = record ? isValidCoordinate(record.latitude, record.longitude) : false;
+  // ── Stop GPS tracking ───────────────────────────────────────────────────────
+  const stopNavigation = useCallback(() => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    setNavPhase("idle");
+    setUserCoords(null);
+    setEncodedPolyline(null);
+    setRouteDistance(null);
+    setRouteDuration(null);
+    setRouteStatus("none");
+    setRouteError(null);
+    lastRouteOriginRef.current = null;
+  }, []);
 
-  // Calculate real distance & walking time if both user and dest coordinates exist
-  const distanceInfo = useMemo(() => {
+  // ── Cleanup on unmount ──────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+    };
+  }, []);
+
+  // ── Recenter / Fit helpers ──────────────────────────────────────────────────
+  const handleRecenter = useCallback(() => {
+    if (userCoords) {
+      mapControlsRef.current?.recenterUser();
+    } else {
+      mapControlsRef.current?.recenterDest();
+    }
+  }, [userCoords]);
+
+  const handleFitAll = useCallback(() => {
+    mapControlsRef.current?.fitAll();
+  }, []);
+
+  // ── Distance display (straight-line fallback when no route) ────────────────
+  const straightLineInfo = useMemo(() => {
     if (!record || !hasValidCoordinates || !userCoords) return null;
     if (typeof record.latitude !== "number" || typeof record.longitude !== "number") return null;
-
     const meters = calculateDistanceMeters(
       userCoords.lat,
       userCoords.lng,
       record.latitude,
       record.longitude
     );
-    return formatDistanceAndWalkTime(meters);
+    return { meters, distance: formatDistance(meters) };
   }, [record, hasValidCoordinates, userCoords]);
 
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Render: loading
+  // ════════════════════════════════════════════════════════════════════════════
   if (!isLoaded) {
     return (
       <MobileShell>
         <div className="flex flex-col flex-1 items-center justify-center text-sm text-[#5E6E82]">
-          Loading navigation details...
+          Loading navigation details…
         </div>
       </MobileShell>
     );
   }
 
-  // Empty state if no parking records exist
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Render: empty state
+  // ════════════════════════════════════════════════════════════════════════════
   if (!record) {
     return (
       <MobileShell>
@@ -156,7 +345,8 @@ function NavigateContent() {
             </div>
             <h2 className="text-lg font-bold text-[#0B1222] mb-1">No Saved Parking Spot</h2>
             <p className="text-sm text-[#5E6E82] mb-5 max-w-[250px]">
-              You don&apos;t have any saved parking records yet. Save your vehicle location first to use navigation guidance.
+              You don&apos;t have any saved parking records yet. Save your vehicle location first to
+              use navigation guidance.
             </p>
             <Button variant="primary" href="/save-parking">
               Save Parking
@@ -167,6 +357,12 @@ function NavigateContent() {
     );
   }
 
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Render: main navigation screen
+  // ════════════════════════════════════════════════════════════════════════════
+  const isNavigating = navPhase === "navigating";
+  const googleMapsKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+
   return (
     <MobileShell>
       <div className="flex flex-col flex-1 pb-4">
@@ -175,22 +371,89 @@ function NavigateContent() {
           backHref={`/vehicle-details?id=${record.id}`}
         />
 
-        {/* Real Interactive Map OR Clear Fallback */}
+        {/* ── MAP SECTION ─────────────────────────────────────────────────── */}
         {hasValidCoordinates ? (
-          <ParkingMap
-            destLat={record.latitude!}
-            destLng={record.longitude!}
-            userLat={userCoords?.lat}
-            userLng={userCoords?.lng}
-            userAccuracy={userCoords?.accuracy}
-            licensePlate={record.licensePlate}
-            vehicleType={record.type}
-            locationName={record.location}
-            floorZone={record.floorZone}
-            className="w-full h-72 mb-4 shrink-0"
-          />
+          <div className="relative mb-3 shrink-0">
+            {/* Map */}
+            {googleMapsKey ? (
+              <NavigationMap
+                destLat={record.latitude!}
+                destLng={record.longitude!}
+                userLat={userCoords?.lat}
+                userLng={userCoords?.lng}
+                userAccuracy={userCoords?.accuracy}
+                licensePlate={record.licensePlate}
+                vehicleType={record.type}
+                locationName={record.location}
+                floorZone={record.floorZone}
+                encodedPolyline={encodedPolyline}
+                className="w-full h-72"
+                onControlsReady={(controls) => {
+                  mapControlsRef.current = controls;
+                }}
+              />
+            ) : (
+              <LeafletMap
+                destLat={record.latitude!}
+                destLng={record.longitude!}
+                userLat={userCoords?.lat}
+                userLng={userCoords?.lng}
+                userAccuracy={userCoords?.accuracy}
+                licensePlate={record.licensePlate}
+                vehicleType={record.type}
+                locationName={record.location}
+                floorZone={record.floorZone}
+                className="w-full h-72"
+              />
+            )}
+
+            {/* Map overlay controls */}
+            <div className="absolute top-2 right-2 flex flex-col gap-1.5 z-20">
+              {/* Recenter / Fit All */}
+              {userCoords && (
+                <button
+                  type="button"
+                  onClick={handleRecenter}
+                  className="w-9 h-9 rounded-xl bg-white/95 shadow-sm border border-black/5 flex items-center justify-center text-[#007AFF] active:scale-95 transition-all"
+                  title="Recenter on my location"
+                  aria-label="Recenter on my location"
+                >
+                  <span className="w-3 h-3 rounded-full bg-[#007AFF] ring-[3px] ring-blue-200" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleFitAll}
+                className="w-9 h-9 rounded-xl bg-white/95 shadow-sm border border-black/5 flex items-center justify-center text-[#007AFF] text-sm font-bold active:scale-95 transition-all"
+                title="Fit route in view"
+                aria-label="Fit route in view"
+              >
+                ⤢
+              </button>
+
+              {/* Route loading spinner on map */}
+              {routeStatus === "loading" && (
+                <div className="w-9 h-9 rounded-xl bg-white/95 shadow-sm border border-black/5 flex items-center justify-center">
+                  <span className="w-4 h-4 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
+            </div>
+
+            {/* Legend badges */}
+            <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none z-20">
+              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-red-500 text-white shadow-xs">
+                🅿 Parking
+              </span>
+              {userCoords && (
+                <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-[#007AFF] text-white shadow-xs">
+                  📍 You
+                </span>
+              )}
+            </div>
+          </div>
         ) : (
-          <div className="relative w-full h-52 rounded-2xl overflow-hidden shadow-xs border border-[#EDF2F7] mb-4 bg-slate-100 shrink-0 flex flex-col justify-end">
+          /* No coordinates – static image fallback */
+          <div className="relative w-full h-52 rounded-2xl overflow-hidden shadow-xs border border-[#EDF2F7] mb-3 bg-slate-100 shrink-0 flex flex-col justify-end">
             <Image
               src="/home-map.png"
               fill
@@ -199,16 +462,6 @@ function NavigateContent() {
               priority
               unoptimized
             />
-            <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between">
-              <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-white/95 text-[#0B1222] shadow-xs backdrop-blur-xs border border-black/5">
-                No GPS Coordinates Recorded
-              </span>
-              {record.status === "active" && (
-                <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-[#34C759] text-white shadow-xs">
-                  Active Spot
-                </span>
-              )}
-            </div>
             <div className="relative z-10 m-2.5 bg-white/95 backdrop-blur-md rounded-xl p-2.5 shadow-sm border border-black/5 flex items-center gap-2.5">
               <div className="relative w-10 h-10 rounded-lg overflow-hidden shrink-0 border border-gray-100">
                 <Image
@@ -231,8 +484,60 @@ function NavigateContent() {
           </div>
         )}
 
-        {/* Figma Screen 07: Vehicle Summary Card with Walking Route Estimate */}
-        <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-4">
+        {/* ── ROUTE INFO PILL ─────────────────────────────────────────────── */}
+        {routeStatus === "ok" && routeDistance !== null && routeDuration !== null && (
+          <div className="bg-[#007AFF] rounded-2xl px-4 py-3 mb-3 flex items-center gap-3 shadow-xs shrink-0">
+            <CompassIcon className="w-5 h-5 text-white shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-extrabold text-base leading-tight">
+                {formatDuration(routeDuration)}
+                <span className="font-normal text-sm text-blue-100 ml-2">
+                  ({formatDistance(routeDistance)})
+                </span>
+              </p>
+              <p className="text-blue-100 text-[11px]">Walking route via Google Maps</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => userCoords && fetchRoute(userCoords, true)}
+              className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center active:scale-95 transition-all"
+              title="Refresh route"
+              aria-label="Refresh route"
+            >
+              <ArrowPathIcon className="w-4 h-4 text-white" />
+            </button>
+          </div>
+        )}
+
+        {/* Straight-line fallback when no route yet */}
+        {routeStatus !== "ok" && straightLineInfo && (
+          <div className="bg-[#F6F8FD] rounded-2xl px-4 py-3 mb-3 flex items-center gap-3 border border-[#EDF2F7] shrink-0">
+            <CompassIcon className="w-5 h-5 text-[#5E6E82] shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[#0B1222] font-bold text-sm">
+                ~{straightLineInfo.distance} away
+              </p>
+              <p className="text-[#5E6E82] text-[11px]">
+                Straight-line estimate · Walking route{" "}
+                {routeStatus === "loading" ? "loading…" : "unavailable"}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Route error notice */}
+        {routeStatus === "error" && routeError && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 mb-3 flex items-start gap-2 shrink-0">
+            <ExclamationCircleIcon className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-amber-800">Route unavailable</p>
+              <p className="text-[11px] text-amber-700 mt-0.5">{routeError}</p>
+            </div>
+          </div>
+        )}
+
+        {/* ── VEHICLE SUMMARY CARD ─────────────────────────────────────────── */}
+        <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-3 shrink-0">
           <div className="flex items-center gap-3">
             <div className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 border border-gray-100 bg-[#F6F8FD]">
               <Image
@@ -262,148 +567,106 @@ function NavigateContent() {
             </Link>
           </div>
 
-          {/* Real Walking Time & Distance Badge (Figma Screen 07: "8 min (400 m)") */}
-          {distanceInfo ? (
-            <div className="mt-3.5 pt-3.5 border-t border-gray-100">
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-extrabold text-[#0B1222] tracking-tight">
-                  {distanceInfo.walkTime} ({distanceInfo.distance})
-                </span>
-              </div>
-              <p className="text-xs text-[#5E6E82] mt-0.5">
-                Walking time estimated from the straight-line distance to your vehicle.
-              </p>
-            </div>
-          ) : hasValidCoordinates ? (
-            <div className="mt-3.5 pt-3 border-t border-gray-100 flex items-center justify-between">
-              <span className="text-xs text-[#5E6E82]">
-                Target: {record.latitude?.toFixed(4)}, {record.longitude?.toFixed(4)}
-              </span>
-              <button
-                type="button"
-                onClick={handleGetLocation}
-                className="text-xs font-bold text-[#007AFF] hover:underline"
-              >
-                Acquire GPS →
-              </button>
-            </div>
-          ) : null}
-
-          {/* Quick Start Route & Details Buttons */}
-          <div className="grid grid-cols-2 gap-2.5 mt-3.5">
-            {hasValidCoordinates ? (
-              <a
-                href={getGoogleMapsUrl(
-                  record.latitude!,
-                  record.longitude!,
-                  userCoords?.lat,
-                  userCoords?.lng
-                )}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="py-2.5 px-3 rounded-xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-xs font-bold text-center flex items-center justify-center gap-1.5 shadow-2xs active:scale-[0.98] transition-all"
-              >
-                <CompassIcon className="w-4 h-4 text-white" />
-                <span>Start in Maps</span>
-              </a>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  const indoorEl = document.getElementById("indoor-guidance-section");
-                  indoorEl?.scrollIntoView({ behavior: "smooth" });
-                }}
-                className="py-2.5 px-3 rounded-xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-xs font-bold text-center flex items-center justify-center gap-1.5 shadow-2xs active:scale-[0.98] transition-all"
-              >
-                <LayersIcon className="w-4 h-4 text-white" />
-                <span>Indoor Guide</span>
-              </button>
-            )}
-
-            <Link
-              href={`/vehicle-details?id=${record.id}`}
-              className="py-2.5 px-3 rounded-xl bg-[#F0F4F9] hover:bg-[#E4EBF5] text-[#0B1222] text-xs font-bold text-center flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
-            >
-              <span>Details</span>
-              <span className="text-[#8E95A5]">→</span>
-            </Link>
-          </div>
+          {/* GPS accuracy line */}
+          {userCoords?.accuracy && (
+            <p className="text-[11px] text-[#5E6E82] mt-2.5 pt-2.5 border-t border-gray-100 font-mono">
+              GPS accuracy: ±{Math.round(userCoords.accuracy)} m
+            </p>
+          )}
         </div>
 
-        {/* SECTION 1: Outdoor Navigation & Geolocation Trigger */}
-        {hasValidCoordinates ? (
-          <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <CompassIcon className="w-5 h-5 text-[#007AFF]" />
-                <h2 className="text-sm font-bold text-[#0B1222]">Outdoor GPS Navigation</h2>
-              </div>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-[#007AFF]">
-                GPS Active
+        {/* ── NAVIGATION CONTROLS ──────────────────────────────────────────── */}
+        {hasValidCoordinates && (
+          <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-3 shrink-0">
+            <div className="flex items-center gap-2 mb-3">
+              <CompassIcon className="w-5 h-5 text-[#007AFF]" />
+              <h2 className="text-sm font-bold text-[#0B1222] flex-1">Walking Navigation</h2>
+              <span
+                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                  isNavigating
+                    ? "bg-[#34C759]/15 text-[#34C759]"
+                    : "bg-blue-50 text-[#007AFF]"
+                }`}
+              >
+                {isNavigating ? "● Live" : "GPS Ready"}
               </span>
             </div>
 
-            <p className="text-xs text-[#5E6E82] mb-3 leading-relaxed">
-              Target parking destination coordinates:
-            </p>
-
-            {/* Destination Coordinates Pill */}
-            <div className="bg-[#F6F8FD] rounded-xl p-2.5 border border-[#EDF2F7] mb-3 text-xs font-mono text-[#0B1222]">
-              <span className="font-semibold text-[#5E6E82] font-sans">Destination: </span>
-              {record.latitude?.toFixed(5)}, {record.longitude?.toFixed(5)}
-            </div>
-
-            {/* Geolocation Button */}
-            {geoStatus === "idle" && (
-              <button
-                type="button"
-                onClick={handleGetLocation}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#007AFF]/10 hover:bg-[#007AFF]/20 text-[#007AFF] text-xs font-bold transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-3"
-              >
-                <CompassIcon className="w-4 h-4" />
-                <span>Get My Location (Browser GPS)</span>
-              </button>
-            )}
-
-            {geoStatus === "loading" && (
-              <div className="w-full py-2.5 px-4 rounded-xl bg-gray-50 text-[#5E6E82] text-xs font-medium flex items-center justify-center gap-2 mb-3">
-                <span className="w-3.5 h-3.5 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin" />
-                <span>Acquiring GPS position...</span>
-              </div>
-            )}
-
-            {geoStatus === "success" && userCoords && (
-              <div className="bg-[#34C759]/10 border border-[#34C759]/25 rounded-xl p-2.5 mb-3 text-xs text-[#0B1222]">
-                <div className="flex items-center gap-1.5 font-semibold text-[#34C759] mb-1">
-                  <CheckIcon className="w-4 h-4" />
-                  <span>Current Location Acquired</span>
-                </div>
-                <p className="font-mono text-[11px] text-[#5E6E82]">
-                  {userCoords.lat.toFixed(5)}, {userCoords.lng.toFixed(5)}
-                  {userCoords.accuracy && ` (±${Math.round(userCoords.accuracy)}m)`}
-                </p>
-              </div>
-            )}
-
-            {geoStatus === "error" && geoError && (
+            {/* GPS error */}
+            {geoError && (
               <div className="bg-[#FF3B30]/10 border border-[#FF3B30]/25 rounded-xl p-2.5 mb-3 text-xs text-[#FF3B30] flex items-start gap-2">
                 <ExclamationCircleIcon className="w-4 h-4 shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="font-semibold">Location Error</p>
                   <p className="text-[11px] text-[#5E6E82] mt-0.5">{geoError}</p>
-                  <button
-                    type="button"
-                    onClick={handleGetLocation}
-                    className="text-[11px] font-bold text-[#007AFF] hover:underline mt-1 block"
-                  >
-                    Try Again
-                  </button>
                 </div>
               </div>
             )}
 
-            {/* External Navigation Links (Validated & Real) */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
+            {/* Destination coords */}
+            <div className="bg-[#F6F8FD] rounded-xl p-2.5 border border-[#EDF2F7] mb-3 text-xs font-mono text-[#0B1222]">
+              <span className="font-semibold text-[#5E6E82] font-sans text-[11px]">
+                Destination:{" "}
+              </span>
+              {record.latitude?.toFixed(5)}, {record.longitude?.toFixed(5)}
+            </div>
+
+            {/* Indoor GPS disclaimer */}
+            <p className="text-[11px] text-[#5E6E82] mb-3 leading-relaxed">
+              GPS routing ends at the{" "}
+              <strong className="text-[#0B1222]">building entrance</strong>. Use the
+              indoor guide below to reach the exact parking spot.
+            </p>
+
+            {/* Controls: start / stop / recenter */}
+            {navPhase === "idle" || navPhase === "ready" ? (
+              <button
+                type="button"
+                onClick={startNavigation}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-xs active:scale-[0.98] transition-all"
+              >
+                <CompassIcon className="w-4 h-4 text-white" />
+                Start Navigation
+              </button>
+            ) : navPhase === "locating" ? (
+              <div className="w-full py-2.5 px-4 rounded-xl bg-gray-50 text-[#5E6E82] text-sm font-medium flex items-center justify-center gap-2">
+                <span className="w-4 h-4 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin" />
+                Acquiring GPS…
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleRecenter}
+                  className="py-2.5 px-3 rounded-xl bg-[#007AFF]/10 hover:bg-[#007AFF]/20 text-[#007AFF] text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+                >
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#007AFF] ring-2 ring-blue-200" />
+                  Recenter
+                </button>
+                <button
+                  type="button"
+                  onClick={stopNavigation}
+                  className="py-2.5 px-3 rounded-xl bg-[#FF3B30]/10 hover:bg-[#FF3B30]/20 text-[#FF3B30] text-xs font-bold flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+                >
+                  <XIcon className="w-3.5 h-3.5" />
+                  Stop
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── OPEN IN EXTERNAL MAPS ────────────────────────────────────────── */}
+        {hasValidCoordinates && (
+          <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-3 shrink-0">
+            <p className="text-xs font-semibold text-[#0B1222] mb-2.5">
+              Open in External Maps
+            </p>
+            <p className="text-[11px] text-[#5E6E82] mb-3 leading-relaxed">
+              If the embedded map route doesn&apos;t load, continue walking navigation in
+              Google Maps or Apple Maps.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
               <a
                 href={getGoogleMapsUrl(
                   record.latitude!,
@@ -413,12 +676,11 @@ function NavigateContent() {
                 )}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white border border-[#E3E8EF] hover:border-[#007AFF] text-xs font-semibold text-[#0B1222] shadow-2xs hover:shadow-xs active:scale-[0.98] transition-all"
+                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white border border-[#E3E8EF] hover:border-[#007AFF] text-xs font-semibold text-[#0B1222] shadow-2xs active:scale-[0.98] transition-all"
               >
                 <span>Google Maps</span>
                 <ExternalLinkIcon className="w-3.5 h-3.5 text-[#8E95A5]" />
               </a>
-
               <a
                 href={getAppleMapsUrl(
                   record.latitude!,
@@ -428,32 +690,20 @@ function NavigateContent() {
                 )}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white border border-[#E3E8EF] hover:border-[#007AFF] text-xs font-semibold text-[#0B1222] shadow-2xs hover:shadow-xs active:scale-[0.98] transition-all"
+                className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-white border border-[#E3E8EF] hover:border-[#007AFF] text-xs font-semibold text-[#0B1222] shadow-2xs active:scale-[0.98] transition-all"
               >
                 <span>Apple Maps</span>
                 <ExternalLinkIcon className="w-3.5 h-3.5 text-[#8E95A5]" />
               </a>
             </div>
           </div>
-        ) : (
-          /* Informational Card When No Coordinates Were Recorded */
-          <div className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-4">
-            <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-                <CompassIcon className="w-5 h-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <h2 className="text-sm font-bold text-[#0B1222]">Outdoor GPS Not Recorded</h2>
-                <p className="text-xs text-[#5E6E82] mt-1 leading-relaxed">
-                  GPS coordinates were not recorded for this parking spot. Use the indoor guidance below to locate your vehicle.
-                </p>
-              </div>
-            </div>
-          </div>
         )}
 
-        {/* SECTION 2: Indoor Parking Guidance (Step-by-Step Layout) */}
-        <div id="indoor-guidance-section" className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-5">
+        {/* ── INDOOR GUIDANCE ──────────────────────────────────────────────── */}
+        <div
+          id="indoor-guidance-section"
+          className="bg-white rounded-2xl p-4 border border-[#EDF2F7] shadow-xs mb-5 shrink-0"
+        >
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <LayersIcon className="w-5 h-5 text-[#007AFF]" />
@@ -465,11 +715,10 @@ function NavigateContent() {
           </div>
 
           <p className="text-xs text-[#5E6E82] mb-3.5">
-            Follow your saved parking record details step-by-step to reach your vehicle:
+            Follow your saved parking record step-by-step to reach your vehicle:
           </p>
 
           <ol className="space-y-3 relative before:absolute before:left-3.5 before:top-3 before:bottom-3 before:w-0.5 before:bg-[#EDF2F7]">
-            {/* Step 1: Building */}
             <li className="flex items-start gap-3 relative">
               <span className="w-7 h-7 rounded-full bg-[#007AFF] text-white text-xs font-bold flex items-center justify-center shrink-0 ring-4 ring-white">
                 1
@@ -483,7 +732,6 @@ function NavigateContent() {
               </div>
             </li>
 
-            {/* Step 2: Floor & Zone */}
             <li className="flex items-start gap-3 relative">
               <span className="w-7 h-7 rounded-full bg-[#007AFF] text-white text-xs font-bold flex items-center justify-center shrink-0 ring-4 ring-white">
                 2
@@ -497,7 +745,6 @@ function NavigateContent() {
               </div>
             </li>
 
-            {/* Step 3: Landmark (if present) */}
             {record.nearbyLandmark && (
               <li className="flex items-start gap-3 relative">
                 <span className="w-7 h-7 rounded-full bg-[#007AFF] text-white text-xs font-bold flex items-center justify-center shrink-0 ring-4 ring-white">
@@ -513,7 +760,6 @@ function NavigateContent() {
               </li>
             )}
 
-            {/* Step 4: Notes (if present) */}
             {record.notes && (
               <li className="flex items-start gap-3 relative">
                 <span className="w-7 h-7 rounded-full bg-[#007AFF] text-white text-xs font-bold flex items-center justify-center shrink-0 ring-4 ring-white">
@@ -529,7 +775,6 @@ function NavigateContent() {
               </li>
             )}
 
-            {/* Step Final: Vehicle Confirmation */}
             <li className="flex items-start gap-3 relative">
               <span className="w-7 h-7 rounded-full bg-[#34C759] text-white text-xs font-bold flex items-center justify-center shrink-0 ring-4 ring-white">
                 ✓
@@ -544,9 +789,8 @@ function NavigateContent() {
           </ol>
         </div>
 
-        {/* SECTION 3: Action Buttons */}
-        <div className="mt-auto space-y-2.5 pt-1">
-          {/* Arrival Confirmation Trigger */}
+        {/* ── ACTION BUTTONS ───────────────────────────────────────────────── */}
+        <div className="mt-auto space-y-2.5 pt-1 shrink-0">
           <Button
             variant="primary"
             onClick={() => setShowArrivalModal(true)}
@@ -555,24 +799,23 @@ function NavigateContent() {
             I&apos;ve Found My Vehicle
           </Button>
 
-          <Button
-            variant="secondary"
-            href={`/vehicle-details?id=${record.id}`}
-          >
+          <Button variant="secondary" href={`/vehicle-details?id=${record.id}`}>
             View Vehicle Details
           </Button>
 
-          {/* Red End Navigation Button matching Figma 11-navigate.png */}
           <button
             type="button"
-            onClick={() => router.push("/home")}
+            onClick={() => {
+              stopNavigation();
+              router.push("/home");
+            }}
             className="w-full py-3.5 px-6 rounded-full bg-[#FF3B30] hover:bg-[#E02E24] text-white font-semibold text-base shadow-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2"
           >
             <span>End Navigation & Return Home</span>
           </button>
         </div>
 
-        {/* Arrival Confirmation Modal - Exact Figma design_refs/12-arrived-at-location.png */}
+        {/* ── ARRIVAL MODAL ────────────────────────────────────────────────── */}
         {showArrivalModal && (
           <div
             className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
@@ -581,7 +824,6 @@ function NavigateContent() {
             aria-labelledby="arrived-title"
           >
             <div className="bg-white rounded-3xl p-6 w-full max-w-[360px] shadow-2xl border border-gray-100 flex flex-col items-center text-center relative animate-in slide-in-from-bottom-6 sm:zoom-in-95 duration-200">
-              {/* Close Button */}
               <button
                 type="button"
                 onClick={() => setShowArrivalModal(false)}
@@ -591,12 +833,10 @@ function NavigateContent() {
                 <XIcon className="w-5 h-5" />
               </button>
 
-              {/* Green Circle Checkmark Badge */}
               <div className="w-16 h-16 rounded-full bg-[#34C759] flex items-center justify-center text-white mb-4 shadow-sm">
                 <CheckIcon className="w-8 h-8" />
               </div>
 
-              {/* Title & Body */}
               <h3 id="arrived-title" className="text-2xl font-bold text-[#0B1222] mb-1.5">
                 You Have Arrived!
               </h3>
@@ -607,7 +847,6 @@ function NavigateContent() {
                 {record.licensePlate} ({record.floorZone})
               </p>
 
-              {/* Action Buttons */}
               <div className="w-full space-y-2.5">
                 <Button
                   variant="primary"
@@ -617,7 +856,10 @@ function NavigateContent() {
                 </Button>
                 <Button
                   variant="secondary"
-                  onClick={() => router.push("/home")}
+                  onClick={() => {
+                    stopNavigation();
+                    router.push("/home");
+                  }}
                 >
                   Return to Home
                 </Button>
@@ -634,13 +876,16 @@ function NavigateContent() {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+//  Page export (wrapped in Suspense for useSearchParams)
+// ════════════════════════════════════════════════════════════════════════════════
 export default function NavigatePage() {
   return (
     <Suspense
       fallback={
         <MobileShell>
           <div className="flex flex-col flex-1 items-center justify-center text-sm text-[#5E6E82]">
-            Loading navigation...
+            Loading navigation…
           </div>
         </MobileShell>
       }
