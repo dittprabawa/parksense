@@ -22,11 +22,13 @@ import {
   NoteIcon,
   CompassIcon,
   XIcon,
+  ArrowPathIcon,
 } from "@/components/icons";
 import { useAccount } from "@/components/account-gate";
-import { messageOf } from "@/lib/supabase";
+import { messageOf, supabase } from "@/lib/supabase";
 import { readParking, writeParking } from "@/lib/cloud-parking";
-import { ParkingRecord, VehicleType } from "@/lib/parking-storage";
+import { calculateDistanceMeters, ParkingRecord, VehicleType } from "@/lib/parking-storage";
+import { reverseGeocode } from "@/lib/reverse-geocode";
 
 const ParkingPinMap = dynamic(() => import("@/components/parking-pin-map"), { ssr: false });
 
@@ -40,7 +42,8 @@ export default function SaveParkingPage() {
   // Form State
   const [vehicleType, setVehicleType] = useState<VehicleType>("Motorcycle");
   const [licensePlate, setLicensePlate] = useState("");
-  const [building, setBuilding] = useState("");
+  const locationEdits = useRef(0);
+  const [manualLocation, setManualLocation] = useState<string | null>(null);
   const [floor, setFloor] = useState("");
   const [zone, setZone] = useState("");
   const [nearbyLandmark, setNearbyLandmark] = useState("");
@@ -54,66 +57,212 @@ export default function SaveParkingPage() {
     }
     return "";
   });
-  const [gpsCoords, setGpsCoords] = useState<Pin | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
+  const [gpsCoords, setGpsCoords] = useState<Pin | null>(null);
+  const [place, setPlace] = useState<{
+    key: string;
+    name: string;
+    source?: "history" | "geocoded" | "coords";
+    altName?: string;
+  } | null>(null);
+  const [lookupAttempt, setLookupAttempt] = useState(0);
+  const pinLabel = gpsCoords ? gpsCoords.lat.toFixed(6) + ", " + gpsCoords.lng.toFixed(6) : "";
+  const lookupKey = pinLabel + "/" + lookupAttempt;
+  const autoPlace = place?.key === lookupKey ? place.name : undefined;
+  const building = manualLocation ?? (autoPlace || (gpsLoading ? "" : pinLabel));
+  const useAutoName = manualLocation === null;
+
+  useEffect(() => {
+    if (!pinLabel || !useAutoName) return;
+    const controller = new AbortController();
+    let current = true;
+    const timer = window.setTimeout(async () => {
+      const [lat, lng] = pinLabel.split(", ").map(Number);
+      let foundName = "";
+      let source: "history" | "geocoded" | "coords" = "coords";
+
+      try {
+        // Run reverse geocoding in parallel to get real place name (e.g. "Mall Bali Galeria")
+        const geoPromise = reverseGeocode(lat, lng, { signal: controller.signal });
+
+        // Check previous parking history within 25 meters
+        let historyName = "";
+        const { data, error } = await supabase()
+          .from("parking_records")
+          .select("location,latitude,longitude")
+          .eq("user_id", user.id)
+          .not("latitude", "is", null)
+          .order("parked_at", { ascending: false })
+          .limit(100)
+          .abortSignal(controller.signal);
+
+        if (!error && data) {
+          let nearest = 25;
+          for (const row of data) {
+            if (
+              typeof row.latitude !== "number" ||
+              typeof row.longitude !== "number" ||
+              typeof row.location !== "string" ||
+              !row.location.trim() ||
+              /^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(row.location.trim())
+            )
+              continue;
+
+            // Ignore mock/sample test names like "Campus Parking – Building A"
+            const trimmed = row.location.trim();
+            if (/campus parking|building a|zone c/i.test(trimmed)) {
+              continue;
+            }
+
+            const distance = calculateDistanceMeters(lat, lng, row.latitude, row.longitude);
+            if (distance < nearest) {
+              nearest = distance;
+              historyName = row.location;
+            }
+          }
+        }
+
+        const geoName = await geoPromise;
+
+        // Prioritize real place name from GPS reverse geocode (e.g. "Mall Bali Galeria")
+        if (geoName) {
+          foundName = geoName;
+          source = "geocoded";
+        } else if (historyName) {
+          foundName = historyName;
+          source = "history";
+        }
+
+        const alt = foundName && historyName && historyName !== foundName ? historyName : undefined;
+
+        if (current) {
+          setPlace({
+            key: lookupKey,
+            name: foundName,
+            source: foundName ? source : "coords",
+            altName: alt,
+          });
+        }
+      } catch {
+        if (current) {
+          try {
+            const geo = await reverseGeocode(lat, lng, { signal: controller.signal });
+            setPlace({ key: lookupKey, name: geo || "", source: geo ? "geocoded" : "coords" });
+          } catch {
+            setPlace({ key: lookupKey, name: "", source: "coords" });
+          }
+        }
+      }
+    }, 250);
+
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [pinLabel, lookupKey, useAutoName, user.id]);
 
   const [gpsFix, setGpsFix] = useState<Fix | null>(null);
   const [gpsMessage, setGpsMessage] = useState("");
   const cancelGps = useRef<(() => void) | null>(null);
   useEffect(() => () => cancelGps.current?.(), []);
 
-  function sampleGps() {
+  function sampleGps(useLocationName = false) {
+    const editsAtStart = locationEdits.current;
     if (!navigator.geolocation) {
-      setGpsMessage("GPS is unavailable. You can save the floor and zone.");
+      setGpsMessage("GPS is unavailable. You can enter location manually.");
       return;
     }
     cancelGps.current?.();
     setGpsLoading(true);
-    setGpsMessage("Stand beside your vehicle. Collecting GPS readings (0/5)…");
+    setGpsMessage("Detecting your parking location…");
     let best: Fix | null = null;
     const times = new Set<number>();
     let active = true;
     let next = 0;
-    const deadline = window.setTimeout(() => finish(), 15000);
+    const deadline = window.setTimeout(() => finish(), 12000);
+
     function stop() {
       active = false;
       window.clearTimeout(deadline);
       window.clearTimeout(next);
       cancelGps.current = null;
     }
+
     function finish(message?: string) {
       if (!active) return;
       stop();
       setGpsLoading(false);
-      if (best && times.size >= 2) {
+      if (best) {
+        if (useLocationName && editsAtStart === locationEdits.current) setManualLocation(null);
         setGpsFix(best);
         setGpsCoords(best);
-        setGpsMessage("Selected the most precise of " + times.size + " readings.");
+        setGpsMessage(`Location locked (±${Math.ceil(best.accuracy)}m).`);
       } else {
-        setGpsMessage(message ?? "Too few fresh GPS readings. Retry or save without changing the location.");
+        setGpsMessage(message ?? "Too few fresh GPS readings. You can enter location manually.");
       }
     }
+
     cancelGps.current = stop;
+
     function read() {
-      navigator.geolocation.getCurrentPosition(position => {
-        if (!active) return;
-        const { latitude: lat, longitude: lng, accuracy } = position.coords;
-        if (!times.has(position.timestamp) && Number.isFinite(accuracy) && accuracy >= 0 &&
-            Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
-          times.add(position.timestamp);
-          if (!best || accuracy <= best.accuracy) best = { lat, lng, accuracy };
-        }
-        if (times.size >= 5) return finish();
-        setGpsMessage("Stand beside your vehicle. Collecting GPS readings (" + times.size + "/5)…");
-        next = window.setTimeout(read, 1000);
-      }, error => {
-        if (!active) return;
-        if (error.code === 1) finish("Location permission denied. Allow precise location or save without GPS.");
-        else next = window.setTimeout(read, 1000);
-      }, { maximumAge: 0, enableHighAccuracy: true, timeout: 4000 });
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (!active) return;
+          const { latitude: lat, longitude: lng, accuracy } = position.coords;
+          if (
+            !times.has(position.timestamp) &&
+            Number.isFinite(accuracy) &&
+            accuracy >= 0 &&
+            Number.isFinite(lat) &&
+            Number.isFinite(lng) &&
+            Math.abs(lat) <= 90 &&
+            Math.abs(lng) <= 180
+          ) {
+            times.add(position.timestamp);
+            if (!best || accuracy <= best.accuracy) {
+              best = { lat, lng, accuracy };
+              // Set immediate preview fix so the field and map populate without delay
+              if (useLocationName && editsAtStart === locationEdits.current && manualLocation === null) {
+                setGpsFix(best);
+                setGpsCoords(best);
+              }
+            }
+          }
+
+          // If accuracy is good (<= 15m) and we have >= 2 readings, or 4 readings total, finish early
+          if ((times.size >= 2 && best && best.accuracy <= 15) || times.size >= 4) {
+            return finish();
+          }
+
+          setGpsMessage(`Detecting location (${times.size}/4)…`);
+          next = window.setTimeout(read, 800);
+        },
+        (error) => {
+          if (!active) return;
+          if (error.code === 1) {
+            finish("Location permission denied. You can enter location manually.");
+          } else if (best) {
+            finish();
+          } else {
+            next = window.setTimeout(read, 1000);
+          }
+        },
+        { maximumAge: 10000, enableHighAccuracy: true, timeout: 5000 }
+      );
     }
+
     read();
   }
+
+  // Automatically detect location when opening the page
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      sampleGps(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // UI state
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -349,7 +498,7 @@ export default function SaveParkingPage() {
             {/* Location / Building */}
             <div
               className={`bg-white rounded-2xl p-3.5 border shadow-xs mb-2.5 transition-colors ${
-                errors.building ? "border-[#FF3B30] ring-1 ring-[#FF3B30]/30" : "border-[#EDF2F7]"
+                errors.building && !building.trim() ? "border-[#FF3B30] ring-1 ring-[#FF3B30]/30" : "border-[#EDF2F7]"
               }`}
             >
               <div className="flex items-center gap-3">
@@ -357,15 +506,24 @@ export default function SaveParkingPage() {
                   <LocationPinIcon className="w-6 h-6" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <label htmlFor="building" className="block text-xs text-[#5E6E82] font-normal leading-tight">
-                    Building / Location <span className="text-[#FF3B30]">*</span>
-                  </label>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label htmlFor="building" className="block text-xs text-[#5E6E82] font-normal leading-tight">
+                      Building / Location <span className="text-[#FF3B30]">*</span>
+                    </label>
+                    {useAutoName && autoPlace && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#007AFF]/10 text-[#007AFF]">
+                        <CompassIcon className="w-3 h-3" />
+                        {place?.source === "history" ? "From History" : "Auto-detected"}
+                      </span>
+                    )}
+                  </div>
                   <input
                     id="building"
                     type="text"
                     value={building}
                     onChange={(e) => {
-                      setBuilding(e.target.value);
+                      locationEdits.current++;
+                      setManualLocation(e.target.value);
                       if (errors.building) {
                         setErrors((prev) => {
                           const next = { ...prev };
@@ -374,14 +532,71 @@ export default function SaveParkingPage() {
                         });
                       }
                     }}
-                    placeholder="e.g. Campus Parking – Building A"
+                    placeholder={gpsLoading ? "Detecting parking location…" : "e.g. Campus Parking – Building A"}
                     className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
                     required
                   />
                 </div>
               </div>
             </div>
-            {errors.building && (
+            <div className="px-1 mb-3 text-xs flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 text-[#007AFF] font-semibold hover:underline"
+                  disabled={gpsLoading || isSubmitting}
+                  onClick={() => {
+                    setManualLocation(null);
+                    sampleGps(true);
+                    setLookupAttempt((n) => n + 1);
+                  }}
+                >
+                  <ArrowPathIcon className={`w-3.5 h-3.5 ${gpsLoading ? "animate-spin" : ""}`} />
+                  <span>{gpsLoading ? "Detecting location…" : "Refresh Auto Location"}</span>
+                </button>
+
+                {!useAutoName && (
+                  <button
+                    type="button"
+                    className="text-[11px] text-[#007AFF] font-medium hover:underline"
+                    onClick={() => {
+                      setManualLocation(null);
+                      setLookupAttempt((n) => n + 1);
+                    }}
+                  >
+                    Revert to auto-detected
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[11px] text-[#5E6E82]" role="status">
+                {gpsLoading
+                  ? gpsMessage
+                  : useAutoName && autoPlace
+                  ? place?.source === "history"
+                    ? "📍 Auto-filled from your previous parking history at this spot."
+                    : "📍 Auto-detected using GPS. You can edit this name anytime."
+                  : useAutoName && pinLabel && !autoPlace
+                  ? "📍 Location coordinates locked. Resolving place name…"
+                  : !gpsCoords && gpsMessage
+                  ? gpsMessage
+                  : "Your parking location is automatically detected via GPS."}
+              </p>
+
+              {place?.altName && useAutoName && (
+                <button
+                  type="button"
+                  className="text-[11px] text-left text-[#5E6E82] hover:text-[#007AFF] underline mt-0.5"
+                  onClick={() => {
+                    locationEdits.current++;
+                    setManualLocation(place.altName!);
+                  }}
+                >
+                  Use previous name: &ldquo;{place.altName}&rdquo;
+                </button>
+              )}
+            </div>
+            {errors.building && !building.trim() && (
               <p className="text-xs text-[#FF3B30] -mt-1.5 mb-2 px-1 font-medium" role="alert">
                 {errors.building}
               </p>
@@ -490,7 +705,7 @@ export default function SaveParkingPage() {
                 <p className="text-xs">{gpsCoords.accuracy === undefined ? "Manual pin" : "GPS pin"} · {gpsCoords.lat.toFixed(6)}, {gpsCoords.lng.toFixed(6)}</p>
               </>}
               <div className="flex gap-4 mt-2 text-sm text-[#007AFF]">
-                <button type="button" disabled={gpsLoading || isSubmitting} onClick={sampleGps}>
+                <button type="button" disabled={gpsLoading || isSubmitting} onClick={() => sampleGps()}>
                   {gpsFix ? "Retake GPS" : "Record GPS"}
                 </button>
                 {gpsLoading && <button type="button" onClick={() => {

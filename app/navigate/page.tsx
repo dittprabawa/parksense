@@ -14,6 +14,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useParking } from "@/lib/use-parking";
 import { ParkingError } from "@/components/parking-error";
+import { createWalkingFilter, MAX_FIX_AGE_MS } from "@/lib/walking-gps";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MobileShell } from "@/components/mobile-shell";
 import { TopHeader } from "@/components/top-header";
@@ -95,6 +96,8 @@ function NavigateContent() {
   const record = records[0];
 
   const [userCoords, setUserCoords] = useState<UserCoords | null>(null);
+  const [gpsHeld, setGpsHeld] = useState(false);
+  const expiryRef = useRef<number | undefined>(undefined);
   const [geoError, setGeoError] = useState<string | null>(null);
   const [navPhase, setNavPhase] = useState<NavPhase>("idle");
   const watchIdRef = useRef<number | null>(null);
@@ -195,6 +198,10 @@ function NavigateContent() {
     setNavPhase("locating");
 
     if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    window.clearTimeout(expiryRef.current);
+    setGpsHeld(false);
+    setUserCoords(null);
+    const accept = createWalkingFilter();
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         if (watchIdRef.current !== watchId) return;
@@ -203,6 +210,14 @@ function NavigateContent() {
           lng: pos.coords.longitude,
           accuracy: pos.coords.accuracy,
         };
+        const now = Date.now();
+        if (!accept({ ...coords, time: pos.timestamp }, now)) {
+          setGpsHeld(true);
+          return;
+        }
+        setGpsHeld(false);
+        window.clearTimeout(expiryRef.current);
+        expiryRef.current = window.setTimeout(() => setGpsHeld(true), MAX_FIX_AGE_MS - (now - pos.timestamp));
         setUserCoords(coords);
         setGeoError(null);
 
@@ -213,23 +228,15 @@ function NavigateContent() {
       },
       (err) => {
         if (watchIdRef.current !== watchId) return;
+        window.clearTimeout(expiryRef.current);
+        setGpsHeld(true);
+        if (err.code !== err.PERMISSION_DENIED) return;
+        navigator.geolocation.clearWatch(watchId);
+        watchIdRef.current = null;
+        setGpsHeld(false);
         setUserCoords(null);
         setNavPhase("idle");
-        switch (err.code) {
-          case err.PERMISSION_DENIED:
-            setGeoError(
-              "Location permission denied. Please allow location access in your browser settings."
-            );
-            break;
-          case err.POSITION_UNAVAILABLE:
-            setGeoError("GPS signal unavailable. Move to an open area and try again.");
-            break;
-          case err.TIMEOUT:
-            setGeoError("Location request timed out. Please try again.");
-            break;
-          default:
-            setGeoError("An unexpected GPS error occurred.");
-        }
+        setGeoError("Location permission denied. Allow location access in your browser settings.");
       },
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
@@ -238,6 +245,8 @@ function NavigateContent() {
 
   // ── Stop GPS tracking ───────────────────────────────────────────────────────
   const stopNavigation = useCallback(() => {
+    window.clearTimeout(expiryRef.current);
+    setGpsHeld(false);
     if (watchIdRef.current !== null) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
@@ -255,6 +264,7 @@ function NavigateContent() {
   // ── Cleanup on unmount ──────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
+      window.clearTimeout(expiryRef.current);
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
@@ -480,13 +490,13 @@ function NavigateContent() {
             <CompassIcon className="w-5 h-5 text-[#5E6E82] shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-[#0B1222] font-bold text-sm">
-                {remainingDistanceMeters.toFixed(1)} m to your vehicle
+                {gpsHeld ? "Last reliable estimate: " : ""}{remainingDistanceMeters.toFixed(1)} m to your vehicle
               </p>
               <p className="text-[#5E6E82] text-[11px]">
                 Straight-line GPS estimate{routeStatus === "loading" && " · Walking route loading…"}
               </p>
               <p role="status" className="mt-1 text-xs font-medium text-[#0B1222] empty:hidden">
-                {getProximityMessage(remainingDistanceMeters, userCoords.accuracy)}
+                {!gpsHeld && getProximityMessage(remainingDistanceMeters, userCoords.accuracy)}
               </p>
             </div>
           </div>
@@ -553,10 +563,13 @@ function NavigateContent() {
                     : "bg-blue-50 text-[#007AFF]"
                 }`}
               >
-                {isNavigating ? "● Live" : "GPS Ready"}
+                {gpsHeld ? "Waiting for GPS" : isNavigating ? "● Live" : "GPS Ready"}
               </span>
             </div>
 
+            {gpsHeld && <p role="status" className="mb-3 text-xs text-amber-800">
+              {userCoords ? "GPS uncertain. Showing the last reliable position." : "Waiting for a reliable GPS reading."}
+            </p>}
             {/* GPS error */}
             {geoError && (
               <div className="bg-[#FF3B30]/10 border border-[#FF3B30]/25 rounded-xl p-2.5 mb-3 text-xs text-[#FF3B30] flex items-start gap-2">
@@ -597,6 +610,7 @@ function NavigateContent() {
               <div className="w-full py-2.5 px-4 rounded-xl bg-gray-50 text-[#5E6E82] text-sm font-medium flex items-center justify-center gap-2">
                 <span className="w-4 h-4 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin" />
                 Acquiring GPS…
+                <button type="button" className="text-[#007AFF]" onClick={stopNavigation}>Cancel</button>
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2">

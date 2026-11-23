@@ -55,4 +55,4 @@ Gunakan URL HTTPS deployment yang sama dan akun uji yang sama di ponsel A dan pe
 | Impor satu catatan asli dari browser lama, lalu buka ulang daftar impor. | Satu salinan muncul pada kedua perangkat. Catatan contoh dilewati dan salinan lokal tetap ada. |
 | Matikan koneksi saat Save, lalu pulihkan dan coba kembali pada formulir yang sama. | Formulir melaporkan kegagalan atau meminta pemeriksaan ulang. Setelah tersambung, cek hanya ada satu sesi untuk permintaan tersebut. |
 
-Ambang kedekatan navigasi adalah 2 meter. Uji navigasi fisik perlu memperhatikan akurasi yang dilaporkan perangkat. Pada backend yang sudah berisi data, bila upload foto terputus sebelum sesi tersimpan, foto privat yang tak terpakai bisa tertinggal. Periksa referensi `photo_path` sebelum membersihkan berkas lama melalui Storage.
+Ambang kedekatan navigasi adalah 5 meter. Uji navigasi fisik perlu memperhatikan akurasi yang dilaporkan perangkat. Pada backend yang sudah berisi data, bila upload foto terputus sebelum sesi tersimpan, foto privat yang tak terpakai bisa tertinggal. Periksa referensi `photo_path` sebelum membersihkan berkas lama melalui Storage.
