@@ -30,6 +30,14 @@ Select a screenshot to view it at full size.
 
 Set up the database, email sign-in, private photos and local history import using the [ParkSense setup guide](supabase/SETUP.md).
 
+## Vehicle photo recognition
+
+On **Save Parking**, taking or uploading a vehicle photo starts a scan automatically. The form fills in the recognized vehicle type and Indonesian plate number (for example, `DK 1234 AB`). Check the details before saving. You can edit either field while the scan runs.
+
+YOLOv10n detects cars, motorcycles and bicycles. PaddleOCR reads the most prominent detected vehicle, or the whole photo for a plate close-up. A clear, front-facing or rear-facing photo with one vehicle works best.
+
+Scanning runs on the device in a Web Worker. The browser loads the models from ParkSense on the first scan. The model files are included in `public/models`, and `npm run dev` and `npm run build` prepare the WebAssembly runtime. Model sources are [YOLOv10n ONNX (AGPL-3.0)](https://huggingface.co/onnx-community/yolov10n) and [PaddleOCR PP-OCRv6 tiny (Apache-2.0)](https://github.com/PaddlePaddle/PaddleOCR/tree/main/paddleocr-js).
+
 ## Getting Started
 
 First, run the development server:
