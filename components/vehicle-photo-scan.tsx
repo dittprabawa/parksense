@@ -11,6 +11,7 @@ interface Props {
 export function VehiclePhotoScan({ photo, onDetect }: Props) {
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
+  const [altPlate, setAltPlate] = useState<string | null>(null);
   const cancel = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -32,6 +33,7 @@ export function VehiclePhotoScan({ photo, onDetect }: Props) {
       }
       const details = message.result;
       onDetect(details);
+      setAltPlate(details.alternativePlate ?? null);
       const values = [details.vehicleType, details.licensePlate].filter(Boolean).join(" · ");
       if (!details.licensePlate) {
         const vehicle = details.vehicleType ? `Detected ${details.vehicleType}. ` : "";
@@ -67,6 +69,18 @@ export function VehiclePhotoScan({ photo, onDetect }: Props) {
       <p role="status" className="text-xs text-[#5E6E82]">
         {status ?? "Reading the vehicle photo on this device…"}
       </p>
+      {altPlate && (
+        <button
+          type="button"
+          className="mt-1.5 text-xs text-[#007AFF] font-medium hover:underline block"
+          onClick={() => {
+            onDetect({ vehicleType: null, licensePlate: altPlate });
+            setAltPlate(null);
+          }}
+        >
+          Atau gunakan &ldquo;{altPlate}&rdquo;
+        </button>
+      )}
       <button type="button" className="mt-2 font-semibold text-[#007AFF]" onClick={() => {
         if (status === null) {
           cancel.current?.();
