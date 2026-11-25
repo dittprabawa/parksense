@@ -2,6 +2,8 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { ParkingPhoto } from "@/components/parking-photo";
+import { VehiclePhotoScan } from "@/components/vehicle-photo-scan";
+import type { VehicleScan } from "@/lib/vehicle-scan";
 import dynamic from "next/dynamic";
 import type { Pin, Fix } from "@/components/parking-pin-map";
 import Link from "next/link";
@@ -40,8 +42,11 @@ export default function SaveParkingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form State
-  const [vehicleType, setVehicleType] = useState<VehicleType>("Motorcycle");
-  const [licensePlate, setLicensePlate] = useState("");
+  const [manualVehicleType, setVehicleType] = useState<VehicleType | null>(null);
+  const [manualPlate, setLicensePlate] = useState<string | null>(null);
+  const [detected, setDetected] = useState<VehicleScan | null>(null);
+  const vehicleType = manualVehicleType ?? detected?.vehicleType ?? "Motorcycle";
+  const licensePlate = manualPlate ?? detected?.licensePlate ?? "";
   const locationEdits = useRef(0);
   const [manualLocation, setManualLocation] = useState<string | null>(null);
   const [floor, setFloor] = useState("");
@@ -283,6 +288,7 @@ export default function SaveParkingPage() {
     const reader = new FileReader();
     reader.onload = (event) => {
       if (typeof event.target?.result === "string") {
+        if (photoUrl !== event.target.result) setDetected(null);
         setPhotoUrl(event.target.result);
         setErrors((prev) => {
           const next = { ...prev };
@@ -414,6 +420,10 @@ export default function SaveParkingPage() {
             </p>
           )}
 
+          {photoUrl && !isSubmitting && !showSuccessModal && (
+            <VehiclePhotoScan key={photoUrl} photo={photoUrl} onDetect={setDetected} />
+          )}
+
           {/* Section 1: Vehicle Information */}
           <div className="mb-4">
             <h2 className="text-base font-bold text-[#0B1222] mb-2.5">
@@ -452,7 +462,7 @@ export default function SaveParkingPage() {
             {/* License Plate Input */}
             <div
               className={`bg-white rounded-2xl p-3.5 border shadow-xs transition-colors ${
-                errors.licensePlate ? "border-[#FF3B30] ring-1 ring-[#FF3B30]/30" : "border-[#EDF2F7]"
+                errors.licensePlate && !licensePlate.trim() ? "border-[#FF3B30] ring-1 ring-[#FF3B30]/30" : "border-[#EDF2F7]"
               }`}
             >
               <div className="flex items-center gap-3">
@@ -484,7 +494,7 @@ export default function SaveParkingPage() {
                 </div>
               </div>
             </div>
-            {errors.licensePlate && (
+            {errors.licensePlate && !licensePlate.trim() && (
               <p className="text-xs text-[#FF3B30] mt-1 px-1 font-medium" role="alert">
                 {errors.licensePlate}
               </p>

@@ -19,6 +19,7 @@
 
 # production
 /build
+/public/vision-runtime/
 
 # misc
 .DS_Store
