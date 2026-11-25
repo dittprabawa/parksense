@@ -33,9 +33,14 @@ export function VehiclePhotoScan({ photo, onDetect }: Props) {
       const details = message.result;
       onDetect(details);
       const values = [details.vehicleType, details.licensePlate].filter(Boolean).join(" · ");
-      setStatus(values
-        ? `Detected ${values}. Check the vehicle details before saving.`
-        : "No vehicle or plate recognized. Try a clearer photo or enter the details manually.");
+      if (!details.licensePlate) {
+        const vehicle = details.vehicleType ? `Detected ${details.vehicleType}. ` : "";
+        setStatus(vehicle + (details.plateCandidate
+          ? `Plate reading “${details.plateCandidate}” is uncertain. Check the characters on the plate and enter the number below.`
+          : "Plate not recognized. Try a closer photo or enter the number below."));
+        return;
+      }
+      setStatus(`Detected ${values}. Check the vehicle details before saving.`);
     }
 
     async function scan() {

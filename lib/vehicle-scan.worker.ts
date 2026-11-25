@@ -1,7 +1,7 @@
 import { PaddleOCR } from "@paddleocr/paddleocr-js";
 import cv from "@techstark/opencv-js";
 import { env, InferenceSession, Tensor } from "onnxruntime-web";
-import { readPlate, type ScanMessage, type ScannedVehicle } from "./vehicle-scan";
+import { findPlateCandidate, readPlate, type ScanMessage, type ScannedVehicle } from "./vehicle-scan";
 
 const runtimePath = new URL("/vision-runtime/", self.location.origin).href;
 env.wasm.wasmPaths = runtimePath;
@@ -75,7 +75,8 @@ async function findPlate(image: ImageBitmap, region: Region) {
     const mat = cv.matFromImageData(ctx.getImageData(0, 0, width, height));
     try {
       const [result] = await ocr.predict(mat);
-      return readPlate(result.items);
+      const licensePlate = readPlate(result.items);
+      return { licensePlate, plateCandidate: licensePlate ? undefined : findPlateCandidate(result.items) };
     } finally {
       mat.delete();
     }
@@ -91,8 +92,8 @@ self.onmessage = async ({ data: photo }: MessageEvent<Blob>) => {
     image = await createImageBitmap(photo);
     const vehicle = await findVehicle(image);
     const region = vehicle?.region ?? { x: 0, y: 0, w: image.width, h: image.height };
-    const licensePlate = await findPlate(image, region);
-    message = { result: { vehicleType: vehicle?.type ?? null, licensePlate } };
+    const plate = await findPlate(image, region);
+    message = { result: { vehicleType: vehicle?.type ?? null, ...plate } };
   } catch {
     message = { error: "Scan unavailable. Try again or enter the vehicle details manually." };
   } finally {
