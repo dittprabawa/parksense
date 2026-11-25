@@ -72,16 +72,44 @@ async function findPlate(image: ImageBitmap, region: Region) {
     const height = Math.max(1, Math.round(h * scale));
     const ctx = pixels(width, height);
     ctx.drawImage(image, x, y, w, h, 0, 0, width, height);
-    const mat = cv.matFromImageData(ctx.getImageData(0, 0, width, height));
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const mat = cv.matFromImageData(imgData);
     try {
       const [result] = await ocr.predict(mat);
-      const plateResult = readPlate(result.items);
+      let plateResult = readPlate(result.items);
+      let candidate = plateResult?.plate ? undefined : findPlateCandidate(result.items);
+
+      // Invert color fallback for dark/black plates (white text on black background)
+      if (!plateResult && !candidate) {
+        const d = imgData.data;
+        let sum = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          sum += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        }
+        const avgBrightness = sum / (d.length / 4);
+        if (avgBrightness < 130) {
+          for (let i = 0; i < d.length; i += 4) {
+            d[i] = 255 - d[i];
+            d[i + 1] = 255 - d[i + 1];
+            d[i + 2] = 255 - d[i + 2];
+          }
+          const invMat = cv.matFromImageData(imgData);
+          try {
+            const [invResult] = await ocr.predict(invMat);
+            plateResult = readPlate(invResult.items);
+            candidate = plateResult?.plate ? undefined : findPlateCandidate(invResult.items);
+          } finally {
+            invMat.delete();
+          }
+        }
+      }
+
       const licensePlate = plateResult?.plate ?? null;
       const alternativePlate = plateResult?.alternative;
       return {
         licensePlate,
         alternativePlate,
-        plateCandidate: licensePlate ? undefined : findPlateCandidate(result.items),
+        plateCandidate: licensePlate ? undefined : candidate,
       };
     } finally {
       mat.delete();
@@ -97,8 +125,19 @@ self.onmessage = async ({ data: photo }: MessageEvent<Blob>) => {
   try {
     image = await createImageBitmap(photo);
     const vehicle = await findVehicle(image);
-    const region = vehicle?.region ?? { x: 0, y: 0, w: image.width, h: image.height };
-    const plate = await findPlate(image, region);
+    // Pad vehicle region by 15% so bumper/fender mounted license plates aren't clipped
+    const region = vehicle?.region ? {
+      x: Math.max(0, vehicle.region.x - vehicle.region.w * 0.15),
+      y: Math.max(0, vehicle.region.y - vehicle.region.h * 0.15),
+      w: Math.min(image.width - Math.max(0, vehicle.region.x - vehicle.region.w * 0.15), vehicle.region.w * 1.3),
+      h: Math.min(image.height - Math.max(0, vehicle.region.y - vehicle.region.h * 0.15), vehicle.region.h * 1.3),
+    } : { x: 0, y: 0, w: image.width, h: image.height };
+
+    let plate = await findPlate(image, region);
+    // Fallback: If vehicle crop yielded no plate, scan the full original image
+    if (!plate.licensePlate && !plate.plateCandidate && vehicle) {
+      plate = await findPlate(image, { x: 0, y: 0, w: image.width, h: image.height });
+    }
     message = { result: { vehicleType: vehicle?.type ?? null, ...plate } };
   } catch {
     message = { error: "Scan unavailable. Try again or enter the vehicle details manually." };
