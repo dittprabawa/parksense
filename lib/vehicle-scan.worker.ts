@@ -75,8 +75,14 @@ async function findPlate(image: ImageBitmap, region: Region) {
     const mat = cv.matFromImageData(ctx.getImageData(0, 0, width, height));
     try {
       const [result] = await ocr.predict(mat);
-      const licensePlate = readPlate(result.items);
-      return { licensePlate, plateCandidate: licensePlate ? undefined : findPlateCandidate(result.items) };
+      const plateResult = readPlate(result.items);
+      const licensePlate = plateResult?.plate ?? null;
+      const alternativePlate = plateResult?.alternative;
+      return {
+        licensePlate,
+        alternativePlate,
+        plateCandidate: licensePlate ? undefined : findPlateCandidate(result.items),
+      };
     } finally {
       mat.delete();
     }
