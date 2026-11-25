@@ -37,7 +37,7 @@ export default function LoginPage() {
     }
   }
   return <MobileShell><div className="flex flex-col flex-1 justify-center gap-5">
-    <Image src="/parksense-mark.png" width={56} height={56} alt="ParkSense" />
+    <Image src="/parksense-icon.svg" width={56} height={56} alt="ParkSense" className="object-contain" unoptimized />
     <h1 className="text-2xl font-bold">{register ? "Create an account" : "Sign in to ParkSense"}</h1>
     <form onSubmit={submit} className="space-y-3">
       <FormField icon={<MailIcon />} type="email" aria-label="Email" placeholder="Email" autoComplete="email"

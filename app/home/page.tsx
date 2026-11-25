@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import { useEffect, useState } from "react";
+import { useAccount } from "@/components/account-gate";
+import { loadProfile } from "@/lib/profile-store";
 import Image from "next/image";
 import Link from "next/link";
 import { MobileShell } from "@/components/mobile-shell";
@@ -21,21 +23,48 @@ import { messageOf } from "@/lib/supabase";
 import { isValidCoordinate } from "@/lib/parking-storage";
 import { changeParking } from "@/lib/cloud-parking";
 
+function getFirstName(displayName: string, email?: string | null) {
+  const cleanName = displayName.trim();
+  if (cleanName) {
+    return cleanName.split(/\s+/)[0];
+  }
+  if (email) {
+    const prefix = email.split("@")[0].split(/[._-]/)[0];
+    if (prefix) {
+      return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+    }
+  }
+  return "User";
+}
+
 export default function HomePage() {
+  const user = useAccount();
+  const [firstName, setFirstName] = useState("User");
+
+  useEffect(() => {
+    const profile = loadProfile(user.id);
+    setFirstName(getFirstName(profile.displayName, user.email));
+  }, [user.id, user.email]);
+
   const { records, isLoaded, error } = useParking("active");
   const activeRecord = records[0];
   const [showEndModal, setShowEndModal] = useState(false);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
+
   async function handleConfirmEndParking() {
     if (!activeRecord || busy) return;
     setBusy(true);
     try {
       await changeParking(activeRecord, "end");
       setShowEndModal(false);
-    } catch (error) { setFailure(messageOf(error)); }
-    finally { setBusy(false); }
+    } catch (error) {
+      setFailure(messageOf(error));
+    } finally {
+      setBusy(false);
+    }
   }
+
   if (error) return <ParkingError message={error} />;
 
   const activeHref = activeRecord ? `/navigate?id=${activeRecord.id}` : "/save-parking";
@@ -46,16 +75,15 @@ export default function HomePage() {
       <div className="flex flex-col flex-1">
         {/* Top App Bar */}
         <header className="flex items-center justify-between pt-1 pb-3">
-          <div className="flex items-center gap-2">
-            <Image
-              src="/parksense-mark.png"
-              width={34}
-              height={34}
-              alt="ParkSense"
-              unoptimized
-            />
-            <span className="text-xl font-bold text-[#0B1222] tracking-tight">ParkSense</span>
-          </div>
+          <Image
+            src="/parksense-horizontal.svg"
+            width={150}
+            height={34}
+            alt="ParkSense"
+            className="h-8 w-auto object-contain"
+            priority
+            unoptimized
+          />
 
           <button
             type="button"
@@ -68,7 +96,7 @@ export default function HomePage() {
 
         {/* Greetings */}
         <div className="mt-1 mb-3">
-          <h1 className="text-2xl font-bold text-[#0B1222]">Hello, User 👋</h1>
+          <h1 className="text-2xl font-bold text-[#0B1222]">Hello, {firstName}</h1>
           <p className="text-sm text-[#5E6E82] mt-0.5">What do you want to do today?</p>
         </div>
 
@@ -230,7 +258,8 @@ export default function HomePage() {
                 {failure && <p role="alert">{failure}</p>}
                 <button
                   type="button"
-                  disabled={busy} onClick={handleConfirmEndParking}
+                  disabled={busy}
+                  onClick={handleConfirmEndParking}
                   className="w-full py-3.5 px-6 rounded-full bg-[#FF3B30] hover:bg-[#E02E24] text-white font-semibold text-base shadow-sm transition-all active:scale-[0.98]"
                 >
                   End Parking

@@ -9,18 +9,17 @@ export default function WelcomePage() {
         {/* Top Header & Branding */}
         <div className="flex flex-col items-center">
           <Image
-            src="/parksense-mark.png"
-            width={64}
-            height={64}
+            src="/parksense-horizontal.svg"
+            width={200}
+            height={46}
             alt="ParkSense Logo"
-            className="block"
+            className="block h-11 w-auto object-contain mt-1"
             priority
             unoptimized
           />
-          <h2 className="text-xl font-bold text-[#0B1222] mt-2 tracking-tight">ParkSense</h2>
 
           {/* Hero Copy */}
-          <h1 className="text-[28px] font-bold text-[#0B1222] leading-tight mt-4">
+          <h1 className="text-[28px] font-bold text-[#0B1222] leading-tight mt-6">
             Never Lose
             <br />
             Your Parking Spot
@@ -51,7 +50,19 @@ export default function WelcomePage() {
           </div>
 
           <Button variant="primary" href="/login">
-            <span className="mr-1.5 text-lg" aria-hidden="true">→</span>
+            <svg
+              className="w-4 h-4 mr-1.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M5 12h14" />
+              <path d="m12 5 7 7-7 7" />
+            </svg>
             Get Started
           </Button>
         </div>

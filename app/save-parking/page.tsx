@@ -42,6 +42,7 @@ export default function SaveParkingPage() {
   // Form State
   const [vehicleType, setVehicleType] = useState<VehicleType>("Motorcycle");
   const [licensePlate, setLicensePlate] = useState("");
+  const [parkingArea, setParkingArea] = useState<"Indoor" | "Outdoor">("Indoor");
   const locationEdits = useRef(0);
   const [manualLocation, setManualLocation] = useState<string | null>(null);
   const [floor, setFloor] = useState("");
@@ -82,10 +83,8 @@ export default function SaveParkingPage() {
       let source: "history" | "geocoded" | "coords" = "coords";
 
       try {
-        // Run reverse geocoding in parallel to get real place name (e.g. "Mall Bali Galeria")
         const geoPromise = reverseGeocode(lat, lng, { signal: controller.signal });
 
-        // Check previous parking history within 25 meters
         let historyName = "";
         const { data, error } = await supabase()
           .from("parking_records")
@@ -108,7 +107,6 @@ export default function SaveParkingPage() {
             )
               continue;
 
-            // Ignore mock/sample test names like "Campus Parking – Building A"
             const trimmed = row.location.trim();
             if (/campus parking|building a|zone c/i.test(trimmed)) {
               continue;
@@ -124,7 +122,6 @@ export default function SaveParkingPage() {
 
         const geoName = await geoPromise;
 
-        // Prioritize real place name from GPS reverse geocode (e.g. "Mall Bali Galeria")
         if (geoName) {
           foundName = geoName;
           source = "geocoded";
@@ -222,7 +219,6 @@ export default function SaveParkingPage() {
             times.add(position.timestamp);
             if (!best || accuracy <= best.accuracy) {
               best = { lat, lng, accuracy };
-              // Set immediate preview fix so the field and map populate without delay
               if (useLocationName && editsAtStart === locationEdits.current && manualLocation === null) {
                 setGpsFix(best);
                 setGpsCoords(best);
@@ -230,7 +226,6 @@ export default function SaveParkingPage() {
             }
           }
 
-          // If accuracy is good (<= 15m) and we have >= 2 readings, or 4 readings total, finish early
           if ((times.size >= 2 && best && best.accuracy <= 15) || times.size >= 4) {
             return finish();
           }
@@ -255,7 +250,6 @@ export default function SaveParkingPage() {
     read();
   }
 
-  // Automatically detect location when opening the page
   useEffect(() => {
     const timer = window.setTimeout(() => {
       sampleGps(true);
@@ -270,7 +264,6 @@ export default function SaveParkingPage() {
   const [savedRecord, setSavedRecord] = useState<ParkingRecord | null>(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
-  // Handle Photo Capture / Upload
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -310,7 +303,7 @@ export default function SaveParkingPage() {
       newErrors.building = "Parking building or location is required";
     }
 
-    if (!floor.trim() && !zone.trim()) {
+    if (parkingArea === "Indoor" && !floor.trim() && !zone.trim()) {
       newErrors.floorZone = "Floor or Zone is required";
     }
 
@@ -326,7 +319,9 @@ export default function SaveParkingPage() {
     setIsSubmitting(true);
 
     const floorZoneFormatted =
-      floor.trim() && zone.trim()
+      parkingArea === "Outdoor"
+        ? "Outdoor"
+        : floor.trim() && zone.trim()
         ? `${floor.trim()} – ${zone.trim()}`
         : floor.trim() || zone.trim();
 
@@ -336,8 +331,8 @@ export default function SaveParkingPage() {
       location: building.trim(),
       floorZone: floorZoneFormatted,
       building: building.trim(),
-      floor: floor.trim(),
-      zone: zone.trim(),
+      floor: parkingArea === "Outdoor" ? "" : floor.trim(),
+      zone: parkingArea === "Outdoor" ? "" : zone.trim(),
       nearbyLandmark: nearbyLandmark.trim() || undefined,
       notes: notes.trim() || undefined,
       latitude: gpsCoords?.lat,
@@ -495,6 +490,161 @@ export default function SaveParkingPage() {
           <div className="mb-4">
             <h2 className="text-base font-bold text-[#0B1222] mb-2.5">Parking Location</h2>
 
+            {/* Indoor / Outdoor Picker */}
+            <div className="bg-white rounded-2xl p-3.5 border border-[#EDF2F7] shadow-xs mb-2.5">
+              <label className="block text-xs text-[#5E6E82] font-normal mb-2">
+                Parking Area <span className="text-[#FF3B30]">*</span>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {(["Indoor", "Outdoor"] as const).map((area) => {
+                  const isSelected = parkingArea === area;
+                  return (
+                    <button
+                      key={area}
+                      type="button"
+                      onClick={() => {
+                        setParkingArea(area);
+                        if (area === "Outdoor" && errors.floorZone) {
+                          setErrors((prev) => {
+                            const next = { ...prev };
+                            delete next.floorZone;
+                            return next;
+                          });
+                        }
+                      }}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        isSelected
+                          ? "bg-[#007AFF] text-white shadow-xs"
+                          : "bg-[#F6F8FD] text-[#5E6E82] hover:bg-[#EDF2F7] hover:text-[#0B1222]"
+                      }`}
+                    >
+                      {area === "Indoor" ? (
+                        <svg
+                          className="w-4 h-4 shrink-0"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <rect x="4" y="2" width="16" height="20" rx="2" />
+                          <path d="M9 22v-4h6v4" />
+                          <path d="M8 6h.01" />
+                          <path d="M16 6h.01" />
+                          <path d="M12 6h.01" />
+                          <path d="M12 10h.01" />
+                          <path d="M12 14h.01" />
+                          <path d="M16 10h.01" />
+                          <path d="M16 14h.01" />
+                          <path d="M8 10h.01" />
+                          <path d="M8 14h.01" />
+                        </svg>
+                      ) : (
+                        <svg
+                          className="w-4 h-4 shrink-0"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <circle cx="12" cy="12" r="4" />
+                          <path d="M12 2v2" />
+                          <path d="M12 20v2" />
+                          <path d="m4.93 4.93 1.41 1.41" />
+                          <path d="m17.66 17.66 1.41 1.41" />
+                          <path d="M2 12h2" />
+                          <path d="M20 12h2" />
+                          <path d="m6.34 17.66-1.41 1.41" />
+                          <path d="m19.07 4.93-1.41 1.41" />
+                        </svg>
+                      )}
+                      <span>{area}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-[#5E6E82] mt-2">
+                {parkingArea === "Indoor"
+                  ? "Includes Floor & Zone fields for malls, basements, or parking buildings."
+                  : "Open-air parking — Floor & Zone are not required."}
+              </p>
+            </div>
+
+            {/* Floor & Zone Dual Fields (Indoor Only) */}
+            {parkingArea === "Indoor" && (
+              <>
+                <div
+                  className={`bg-white rounded-2xl p-3.5 border shadow-xs mb-2.5 transition-colors ${
+                    errors.floorZone ? "border-[#FF3B30] ring-1 ring-[#FF3B30]/30" : "border-[#EDF2F7]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="text-[#007AFF] shrink-0">
+                      <LayersIcon className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0 flex-1 grid grid-cols-2 gap-3">
+                      <div>
+                        <label htmlFor="floor" className="block text-xs text-[#5E6E82] font-normal leading-tight">
+                          Floor <span className="text-[#FF3B30]">*</span>
+                        </label>
+                        <input
+                          id="floor"
+                          type="text"
+                          value={floor}
+                          onChange={(e) => {
+                            setFloor(e.target.value);
+                            if (errors.floorZone) {
+                              setErrors((prev) => {
+                                const next = { ...prev };
+                                delete next.floorZone;
+                                return next;
+                              });
+                            }
+                          }}
+                          placeholder="e.g. B2"
+                          className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="zone" className="block text-xs text-[#5E6E82] font-normal leading-tight">
+                          Zone <span className="text-[#FF3B30]">*</span>
+                        </label>
+                        <input
+                          id="zone"
+                          type="text"
+                          value={zone}
+                          onChange={(e) => {
+                            setZone(e.target.value);
+                            if (errors.floorZone) {
+                              setErrors((prev) => {
+                                const next = { ...prev };
+                                delete next.floorZone;
+                                return next;
+                              });
+                            }
+                          }}
+                          placeholder="e.g. Zone C"
+                          className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {errors.floorZone && (
+                  <p className="text-xs text-[#FF3B30] -mt-1.5 mb-2 px-1 font-medium" role="alert">
+                    {errors.floorZone}
+                  </p>
+                )}
+              </>
+            )}
+
             {/* Location / Building */}
             <div
               className={`bg-white rounded-2xl p-3.5 border shadow-xs mb-2.5 transition-colors ${
@@ -508,7 +658,8 @@ export default function SaveParkingPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between mb-0.5">
                     <label htmlFor="building" className="block text-xs text-[#5E6E82] font-normal leading-tight">
-                      Building / Location <span className="text-[#FF3B30]">*</span>
+                      {parkingArea === "Indoor" ? "Building / Location" : "Location Name"}{" "}
+                      <span className="text-[#FF3B30]">*</span>
                     </label>
                     {useAutoName && autoPlace && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#007AFF]/10 text-[#007AFF]">
@@ -532,7 +683,13 @@ export default function SaveParkingPage() {
                         });
                       }
                     }}
-                    placeholder={gpsLoading ? "Detecting parking location…" : "e.g. Campus Parking – Building A"}
+                    placeholder={
+                      gpsLoading
+                        ? "Detecting parking location…"
+                        : parkingArea === "Indoor"
+                        ? "e.g. Campus Parking – Building A"
+                        : "e.g. Open Lot near Main Gate"
+                    }
                     className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
                     required
                   />
@@ -574,10 +731,10 @@ export default function SaveParkingPage() {
                   ? gpsMessage
                   : useAutoName && autoPlace
                   ? place?.source === "history"
-                    ? "📍 Auto-filled from your previous parking history at this spot."
-                    : "📍 Auto-detected using GPS. You can edit this name anytime."
+                    ? "Auto-filled from your previous parking history at this spot."
+                    : "Auto-detected using GPS. You can edit this name anytime."
                   : useAutoName && pinLabel && !autoPlace
-                  ? "📍 Location coordinates locked. Resolving place name…"
+                  ? "Location coordinates locked. Resolving place name…"
                   : !gpsCoords && gpsMessage
                   ? gpsMessage
                   : "Your parking location is automatically detected via GPS."}
@@ -602,72 +759,6 @@ export default function SaveParkingPage() {
               </p>
             )}
 
-            {/* Floor & Zone Dual Fields */}
-            <div
-              className={`bg-white rounded-2xl p-3.5 border shadow-xs mb-2.5 transition-colors ${
-                errors.floorZone ? "border-[#FF3B30] ring-1 ring-[#FF3B30]/30" : "border-[#EDF2F7]"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div className="text-[#007AFF] shrink-0">
-                  <LayersIcon className="w-6 h-6" />
-                </div>
-                <div className="min-w-0 flex-1 grid grid-cols-2 gap-3">
-                  <div>
-                    <label htmlFor="floor" className="block text-xs text-[#5E6E82] font-normal leading-tight">
-                      Floor <span className="text-[#FF3B30]">*</span>
-                    </label>
-                    <input
-                      id="floor"
-                      type="text"
-                      value={floor}
-                      onChange={(e) => {
-                        setFloor(e.target.value);
-                        if (errors.floorZone) {
-                          setErrors((prev) => {
-                            const next = { ...prev };
-                            delete next.floorZone;
-                            return next;
-                          });
-                        }
-                      }}
-                      placeholder="e.g. B2"
-                      className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="zone" className="block text-xs text-[#5E6E82] font-normal leading-tight">
-                      Zone <span className="text-[#FF3B30]">*</span>
-                    </label>
-                    <input
-                      id="zone"
-                      type="text"
-                      value={zone}
-                      onChange={(e) => {
-                        setZone(e.target.value);
-                        if (errors.floorZone) {
-                          setErrors((prev) => {
-                            const next = { ...prev };
-                            delete next.floorZone;
-                            return next;
-                          });
-                        }
-                      }}
-                      placeholder="e.g. Zone C"
-                      className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
-                      required
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-            {errors.floorZone && (
-              <p className="text-xs text-[#FF3B30] -mt-1.5 mb-2 px-1 font-medium" role="alert">
-                {errors.floorZone}
-              </p>
-            )}
-
             {/* Nearby Landmark */}
             <div className="bg-white rounded-2xl p-3.5 border border-[#EDF2F7] shadow-xs mb-2.5">
               <div className="flex items-center gap-3">
@@ -683,7 +774,11 @@ export default function SaveParkingPage() {
                     type="text"
                     value={nearbyLandmark}
                     onChange={(e) => setNearbyLandmark(e.target.value)}
-                    placeholder="e.g. Near Elevator & South Exit"
+                    placeholder={
+                      parkingArea === "Indoor"
+                        ? "e.g. Near Elevator & South Exit"
+                        : "e.g. Near Security Post & Main Gate"
+                    }
                     className="w-full bg-transparent text-[15px] font-semibold text-[#0B1222] mt-0.5 focus:outline-none"
                   />
                 </div>

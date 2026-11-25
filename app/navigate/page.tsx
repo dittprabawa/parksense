@@ -443,12 +443,22 @@ function NavigateContent() {
 
             {/* Legend badges */}
             <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none z-20">
-              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-red-500 text-white shadow-xs">
-                🅿 Parking
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-red-500 text-white shadow-xs">
+                <img
+                  src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAABPUlEQVR4nO2ZQU7CUBCGv5VnUJADCZ4EXYtbiWfSjbhUN+hVTOuG1ZiXDIk2GGcK2LHMl8xu/nS+vjZ98CBJkracAwvgA5COq9ZZJl6J2wDDyw8196xECayAK2BA9wyAmc5UZhtbQo/aXILRmOlsD5bmWptPiMexzlZZmtfPYlTEOl+K/BGSIockIs4qu4UX4BI4+s8i8qXegGEfRAR4dayMRBYpdRFR5DdOgbtG5tl5rd01bsh4sqNGxrTtiCjSNicpYuBgH60RcN/IPDmvtbvGDZltatoHkWUfPohL5/8CEkmk1ndiGn3TuE8kRQykSAskRQykSAskRYIhKRIMSZFgiHW+ShsjHLk1Geps7xhYBD56u/YcvU20eaUyEQ9Dz6zB+Za/+vZZN967MNYlXL8zXVals5hXIkkSvvEJD8ACdtc5gYMAAAAASUVORK5CYII="
+                  alt=""
+                  className="w-2.5 h-2.5 rounded-sm object-contain shrink-0"
+                />
+                <span>Parking</span>
               </span>
               {userCoords && (
-                <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-[#007AFF] text-white shadow-xs">
-                  📍 You
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-[#007AFF] text-white shadow-xs">
+                  <img
+                    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADIAAAAyCAYAAAAeP4ixAAAACXBIWXMAAAsTAAALEwEAmpwYAAABz0lEQVR4nO2aPUvDQByHHyoIKY6C6CA4dBC/g4OC6KCji5P4Jdy0RXB00MlPIIigg4Mi4uLL5CBOtqgoLm71vaJGAn8hlIS7JHe11XvgCF1+vz7H9dJeCg6HIwt5oARUgJpci4DXSn154BjwI8aRBRlrfaWY0J8xb9bDXl9FEVw262Gvr6YIfjPrYa+vogi+MOthr6+oCJ4z62Gvz5PdIir00MKuZbXPk92iLGu4LDNj6z7iNbivNRkGzoBX4ASYAnKWugaANeBellRVltVM1s5B4DNizZ6KoEkmZLLiPux7QEfa8APFTrIts5iVPuBR0RWMjbQFDxrhH8Aq0J1BZEWjx5cxkqbAzzhugTGNnssEmeu/IRKMG42e9wR5d6ZFxoFzQyKqjELdUjYqEtAGTMubjZMYNSBCxOtEqMJN4UR0cSIJcSL/TuTrr4hcNYlIe+juH3y1T8xsk4gMAUvAC7CQpiD4MbPYYJFCRNe1jSLbIlb7nIgmTiQpTkQTJ5IUJ6KJE0mKE9EkfFyaizlvNsJzXegTZtkKZXfJCaWV55XhomBsYpaCTI4PTALLdX27pop65OS9KtcsB9Zx9AP78qeBTpmsoG8H6LXQ53CgwTcLC5L3Ch02GAAAAABJRU5ErkJggg=="
+                    alt=""
+                    className="w-2.5 h-2.5 rounded-full object-contain shrink-0"
+                  />
+                  <span>You</span>
                 </span>
               )}
             </div>
